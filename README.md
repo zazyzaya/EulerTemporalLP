@@ -1,4 +1,4 @@
-# EulerTemporalLP
+# Euler: Detecting Network Lateral Movement via Scalable Temporal Graph Link Prediction
 The code powering the Euler Temporal Link Prediction framework (paper under review)
 
 ## Abstract
@@ -16,6 +16,4 @@ Our framework separates the two such that GNNs are free to run independantly. In
 
 This framework is scalable to large datasets, and is much faster than every other temporal link prediction method we tried, while retaining similar, or better precision and AUC. 
 
-![](/img/scalability.png)
-
-![](/img/runtimes.png)
+<img src="/img/scalability.png" width="425"/> <img src="/img/runtimes.png" width="425"/> 
