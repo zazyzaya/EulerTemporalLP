@@ -16,6 +16,4 @@ Our framework separates the two such that GNNs are free to run independantly. In
 
 This framework is scalable to large datasets, and is much faster than every other temporal link prediction method we tried, while retaining similar, or better precision and AUC. 
 
-| Scalability Analysis | Comparison to Other Methods |
-| ---| --- |
-| ![](/img/scalability.png) | ![](/img/runtimes.png) |
+<img src="/img/scalability.png" width="375"/>) <img src="/img/runtimes.png" width="350"/>
