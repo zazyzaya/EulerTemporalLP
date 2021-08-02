@@ -7,7 +7,7 @@ from torch_geometric.data import Data
 from tqdm import tqdm 
 
 from .tdata import TData
-from .load_utils import edge_tv_split
+from .load_utils import edge_tv_split, std_edge_w, standardized
 
 DATE_OF_EVIL_LANL = 150885
 FILE_DELTA = 10000
@@ -23,63 +23,13 @@ TIMES = {
     20      : 228642, # First 20 anoms
     100     : 740104, # First 100 anoms
     500     : 1089597, # First 500 anoms
-    'full'  : 5011199  # Full
+    'all'  : 5011199  # Full
 }
 
 torch.set_num_threads(1)
 
 def empty_lanl():
     return make_data_obj([],None,None)
-
-
-'''
- Build balanced edge weights between [0,1]
- Track how much of an outlier an edge is 
- AKA how many std's it is away from the mean (which is
- likely something like 10) then sigmoid squish it
-
- The effect is normal edges have weight of abt. 0.5, and 
- outlier edges (those which happen a lot) are closer to 1 
-'''
-def std_edge_w(ew_ts):
-    ews = []
-    for ew_t in ew_ts:
-        ew_t = torch.tensor(ew_t, dtype=torch.float)
-        ew_t = (ew_t.long() / ew_t.std()).long()
-        ew_t = torch.sigmoid(ew_t)
-        ews.append(ew_t)
-
-    return ews
-
-def normalized(ew_ts):
-    ews = []
-    for ew_t in ew_ts:
-        ew_t = torch.tensor(ew_t, dtype=torch.float)
-        ew_t = ew_t.true_divide(ew_t.mean())
-        ew_t = torch.sigmoid(ew_t)
-        ews.append(ew_t)
-
-    return ews
-
-def standardized(ew_ts):
-    ews = []
-    for ew_t in ew_ts:
-        ew_t = torch.tensor(ew_t, dtype=torch.float)
-        ew_t = (ew_t - ew_t.mean()) / ew_t.std()
-        ew_t = torch.sigmoid(ew_t)
-        ews.append(ew_t)
-
-    return ews
-
-def inv_standardized(ew_ts):
-    ews = []
-    for ew_t in ew_ts:
-        ew_t = torch.tensor(ew_t, dtype=torch.float)
-        ew_t = (ew_t - ew_t.mean()) / ew_t.std()
-        ew_t = 1-torch.sigmoid(ew_t)
-        ews.append(ew_t)
-
-    return ews
 
 def load_lanl_dist(workers, start=0, end=635015, delta=8640, is_test=False, ew_fn=std_edge_w):
     if start == None or end == None:
@@ -150,6 +100,7 @@ def load_lanl_dist(workers, start=0, end=635015, delta=8640, is_test=False, ew_f
 def load_partial_lanl_job(pid, args):
     data = load_partial_lanl(**args)
     return data
+
 
 def make_data_obj(eis, ys, ew_fn, ews=None, **kwargs):
     # Known value for LANL

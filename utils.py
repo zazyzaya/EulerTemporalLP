@@ -16,6 +16,8 @@ def get_score(nscore, pscore):
     ntn = nscore.size(0)
 
     score = (1-torch.cat([pscore, nscore])).numpy()
+    print(score.max())
+    print(score.min())
     labels = np.zeros(ntp + ntn, dtype=np.long)
     labels[:ntp] = 1
 

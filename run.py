@@ -4,14 +4,24 @@ import pandas as pd
 
 import loaders.load_lanl as lanl
 import loaders.load_pico as pico
+import loaders.load_optc as optc
 from models.recurrent import GRU, LSTM, Lin, EmptyModel
 from models.embedders import \
     static_gcn_rref, static_gat_rref, static_sage_rref, \
     dynamic_gcn_rref, dynamic_gat_rref, dynamic_sage_rref 
 
-from spinup import run_all, DEFAULT_TR
+from spinup import run_all
 
-HOME = '/mnt/raid0_24TB/isaiah/code/EulerFramework/'
+DEFAULT_TR = {
+    'lr': 0.01,
+    'epochs': 15,
+    'min': 1,
+    'patience': 1,
+    'nratio': 10,
+    'val_nratio': 1,
+}
+
+HOME = '/mnt/raid0_24TB/isaiah/code/EulerTemporalLP/'
 def get_args():
     ap = ArgumentParser()
 
@@ -93,7 +103,7 @@ def get_args():
         '--dataset',
         default='LANL', 
         type=str.upper,
-        choices=['LANL', 'L', 'PICO', 'P']
+        choices=['LANL', 'L', 'PICO', 'P', 'OPTC', 'O']
     )
 
     args = ap.parse_args()
@@ -110,15 +120,28 @@ def get_args():
         args.loader = lanl.load_lanl_dist
         args.tr_start = 0
         args.tr_end = lanl.DATE_OF_EVIL_LANL
+        args.val_times = None
+        args.te_times = [(args.tr_end, lanl.TIMES['all'])]
+        args.delta = int(args.delta * (60**2))
         args.manual = False 
-        args.te_end = lanl.TIMES[20]
 
     elif args.dataset.startswith('P'):
         args.loader = pico.load_pico
         args.tr_start = pico.PICO_START
         args.tr_end = pico.DATE_OF_EVIL_PICO
-        args.te_end = pico.PICO_END
+        args.val_times = None
+        args.te_times = [(args.tr_end, pico.PICO_END)]
+        args.delta = int(args.delta * (60**2))
         args.manual = True
+
+    elif args.dataset.startswith('O'):
+        args.loader = optc.load_optc_dist
+        args.tr_start = 0
+        args.tr_end = optc.TIMES['tr_end']
+        args.val_times = (optc.TIMES['val_start'], optc.TIMES['val_end'])
+        args.te_times = [optc.DAY1, optc.DAY2, optc.DAY3]
+        args.delta = int(args.delta * 60)
+        args.manual = False 
 
     # The checking in argparse should never allow it to
     # reach this else block, but just in case
@@ -166,14 +189,15 @@ if __name__ == '__main__':
             rnn_args,
             args.encoder, 
             worker_args, 
-            int(args.delta * (60**2)),
+            args.delta,
             args.load,
             args.fpweight,
             not args.pred,
             args.loader, 
             args.tr_start,
             args.tr_end, 
-            args.te_end,
+            args.val_times,
+            args.te_times,
             args.manual,
             DEFAULT_TR
         )
@@ -184,17 +208,23 @@ if __name__ == '__main__':
     if args.nowrite:
         exit() 
 
-    df = pd.DataFrame(stats)
-    compressed = pd.DataFrame(
-        [df.mean(), df.sem()],
-        index=['mean', 'stderr']
-    ).to_csv().replace(',', ', ')
+    f = open(HOME+'results/stats.txt', 'a')
+    f.write(str(argstr) + '\n\n')
 
-    full = df.to_csv(index=False, header=False)
-    full = full.replace(',', ', ')
+    dfs = [pd.DataFrame(s) for s in list(zip(*stats))]
+    for i in range(len(dfs)):
+        df = dfs[i]
 
-    with open(HOME+'results/stats.txt', 'a') as f:
-        f.write(str(argstr) + '\n\n')
+        compressed = pd.DataFrame(
+            [df.mean(), df.sem()],
+            index=['mean', 'stderr']
+        ).to_csv().replace(',', ', ')
+
+        full = df.to_csv(index=False, header=False)
+        full = full.replace(',', ', ')
+
+        f.write('[%d]:\n' % i)        
         f.write(str(compressed) + '\n')
         f.write(full + '\n\n')
-    
+
+    f.close()

@@ -1,3 +1,4 @@
+import math
 import os
 import pickle
 import time
@@ -49,8 +50,7 @@ torch.set_num_threads(1)
 Constructs params for data loaders
 '''
 def get_work_units(num_workers, start, end, delta, isTe):
-    slices_needed = (end-start) // delta
-    slices_needed += 1
+    slices_needed = math.ceil((end-start) / delta)
 
     # Puts minimum tasks on each worker with some remainder
     per_worker = [slices_needed // num_workers] * num_workers 
@@ -75,8 +75,9 @@ def get_work_units(num_workers, start, end, delta, isTe):
     print("Tasks: %s" % str(per_worker))
     kwargs = []
     prev = start
-    end_t = min(prev + delta*per_worker[0], end)
+    
     for i in range(num_workers):
+            end_t = min(prev + delta*per_worker[i], end)
             kwargs.append({
                 'start': prev,
                 'end': end_t,
@@ -84,8 +85,7 @@ def get_work_units(num_workers, start, end, delta, isTe):
                 'is_test': isTe,
                 'jobs': t_per_worker
             })
-            prev = end_t + 1
-            end_t = min(prev-1 + delta*per_worker[i], end)
+            prev = end_t
 
     return kwargs
     
@@ -175,9 +175,18 @@ def init_procs(rank, world_size, rnn_constructor, rnn_args, worker_constructor, 
 
         
         h0, zs = get_cutoff(model, h0, times, tr_args, lambda_param)
-        stats = test(model, h0, times, rrefs, manual=manual)
+        stats = []
 
-        stats['TPE'] = tpe
+        for te_start,te_end in times['te_times']:
+            test_times = {
+                'te_start': te_start,
+                'te_end': te_end,
+                'delta': times['delta']
+            }
+            st = test(model, h0, test_times, rrefs, manual=manual)
+            st['TPE'] = tpe
+
+            stats.append(st)
 
     # Slaves
     else:
@@ -290,7 +299,7 @@ def get_cutoff(model, h0, times, kwargs, lambda_param):
         model.gcns[0],
         LOAD_FN,
         {
-            'start': times['tr_end'],
+            'start': times['val_start'],
             'end': times['val_end'],
             'delta': times['delta'],
             'jobs': 2,
@@ -342,14 +351,25 @@ def test(model, h0, times, rrefs, manual=False):
     )
 
     print("Loading test data")
+    
+    # Make sure there's enough data for each worker to do something
+    dont_use = 0
+    for ld in ld_args:    
+        if ld['start'] == ld['end']:
+            dont_use += 1
+        else:
+            break
+
+    # If we have more workers than work. Tell master not to use them
     futs = [
         _remote_method_async(
             Encoder.load_new_data,
             rrefs[i], 
             LOAD_FN, 
-            ld_args[i]
-        ) for i in range(len(rrefs))
+            ld_args[i+dont_use]
+        ) for i in range(len(rrefs)-dont_use)
     ]
+    model.num_workers = len(futs)
 
     # Wait until all workers have finished
     [f.wait() for f in futs]
@@ -363,6 +383,9 @@ def test(model, h0, times, rrefs, manual=False):
     # Scores all edges and matches them with name/timestamp
     print("Scoring")
     scores, labels = model.score_all(zs)
+
+    # Then reset model to having all workers for future tests
+    model.num_workers = len(rrefs)
 
     if manual:
         labels = [
@@ -436,7 +459,7 @@ def test(model, h0, times, rrefs, manual=False):
 
 def run_all(workers, rnn_constructor, rnn_args, worker_constructor, 
             worker_args, delta, just_test, lambda_param, static, load_fn, 
-            tr_start, tr_end, te_end, manual, tr_args):
+            tr_start, tr_end, val_times, te_times, manual, tr_args):
     '''
     Starts up proceses, trains validates and tests the model given 
     the inputs 
@@ -475,27 +498,25 @@ def run_all(workers, rnn_constructor, rnn_args, worker_constructor,
         '''
     
     # Need at least 2 deltas; default to 5% of tr data if that's enough
-    val = max((tr_end - tr_start) // 20, delta*2)
-    val_start = tr_end-val
-    val_end = tr_end
-    
-    tr_end = val_start
+    if val_times is None:
+        val = max((tr_end - tr_start) // 20, delta*2)
+        val_start = tr_end-val
+        val_end = tr_end
+        tr_end = val_start
+    else:
+        val_start = val_times[0]
+        val_end = val_times[1]
 
     # Make sure each worker has some data on it
     max_workers = int((tr_end-tr_start) // delta)
     workers = max(min(max_workers, workers), 1)
 
-    # Let timesteps overlap for dynamic as it never
-    # runs loss on the last time step during training
-    te_start = val_end if static \
-        else val_end - delta
-
     times = {
         'tr_start': tr_start,
         'tr_end': tr_end,
+        'val_start': val_start,
         'val_end': val_end,
-        'te_start': te_start,
-        'te_end': te_end,
+        'te_times': te_times,
         'delta': delta
     }
 
@@ -531,4 +552,5 @@ def run_all(workers, rnn_constructor, rnn_args, worker_constructor,
     return stats
 
 if __name__ == '__main__':
-    run_all(WORKERS, GRU, RNN_ARGS, static_gcn_rref, WORKER_ARGS, 2.0, False, 0.6, True, False)
+    #run_all(WORKERS, GRU, RNN_ARGS, static_gcn_rref, WORKER_ARGS, 2.0, False, 0.6, True, False)
+    get_work_units(4, 0, 3101, 6*60, False)

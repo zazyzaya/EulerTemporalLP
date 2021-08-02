@@ -68,12 +68,12 @@ class GCN(Euler_Embed_Unit):
             # Small optimization. Running each loop step as its own thread
             # is a tiny bit faster. 
             zs.append(
-                torch.jit._fork(self.forward_once, mask_enum, i)
-                #self.forward_once(mask_enum, i)
+                #torch.jit._fork(self.forward_once, mask_enum, i)
+                self.forward_once(mask_enum, i)
             )
 
-        return torch.stack([torch.jit._wait(z) for z in zs])
-        #return torch.stack(zs)
+        #return torch.stack([torch.jit._wait(z) for z in zs])
+        return torch.stack(zs)
 
     
     def forward_once(self, mask_enum, i):

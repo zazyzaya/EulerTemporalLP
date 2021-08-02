@@ -31,3 +31,53 @@ def edge_tv_split(ei, v_size=0.05):
     masks[0, rnd[val:]] = True 
 
     return masks[0], masks[1]
+
+'''
+Various weighting functions for edges
+'''
+def std_edge_w(ew_ts):
+    ews = []
+    for ew_t in ew_ts:
+        ew_t = ew_t.float()
+        ew_t = (ew_t.long() / ew_t.std()).long()
+        ew_t = torch.sigmoid(ew_t)
+        ews.append(ew_t)
+
+    return ews
+
+def normalized(ew_ts):
+    ews = []
+    for ew_t in ew_ts:
+        ew_t = ew_t.float()
+        ew_t = ew_t.true_divide(ew_t.mean())
+        ew_t = torch.sigmoid(ew_t)
+        ews.append(ew_t)
+
+    return ews
+
+def standardized(ew_ts):
+    ews = []
+    for ew_t in ew_ts:
+        ew_t = ew_t.float()
+        std = ew_t.std()
+
+        # Avoid div by zero
+        if std.item() == 0:
+            ews.append(torch.full(ew_t.size(), 0.5))
+            continue 
+        
+        ew_t = (ew_t - ew_t.mean()) / std
+        ew_t = torch.sigmoid(ew_t)
+        ews.append(ew_t)
+
+    return ews
+
+def inv_standardized(ew_ts):
+    ews = []
+    for ew_t in ew_ts:
+        ew_t = ew_t.float()
+        ew_t = (ew_t - ew_t.mean()) / ew_t.std()
+        ew_t = 1-torch.sigmoid(ew_t)
+        ews.append(ew_t)
+
+    return ews
