@@ -7,7 +7,7 @@ import torch
 from tqdm import tqdm 
 
 from .tdata import TData
-from .load_utils import edge_tv_split, standardized
+from .load_utils import edge_tv_split, standardized, std_edge_w
 
 # Important files
 IN_F = '/mnt/raid0_24TB/isaiah/data/optc/all_1min.csv'
@@ -36,16 +36,16 @@ TIMES = {
     'val_end': 4097
 }
 
+# Test regions
+DAY1 = (8845, 9876)
+DAY2 = (10831, 11756)
+DAY3 = (11756, 12635)
+
 # Spans of time with no data at all
 DEAD_ZONES = [
     (4097, 8845),
     (9876, 10831)
 ]
-
-# Test regions
-DAY1 = (8845, 9876)
-DAY2 = (10831, 11756)
-DAY3 = (11756, 12635)
 
 # Only needs to be called once; splits the big file into lots of small 
 # files holding only 30 mins of data a piece
@@ -107,7 +107,7 @@ def split():
         pickle.dump(inverted, f)
 
 
-def load_optc_dist(workers, start=0, end=None, delta=30, is_test=False, weight_fn=standardized):
+def load_optc_dist(workers, start=0, end=None, delta=30, is_test=False, weight_fn=std_edge_w):
     # Return empty data object if start is None
     if start is None:
         return TData([],torch.eye(NUM_NODES),None,[])
@@ -333,6 +333,20 @@ def load_optc(start=0, end=None, delta=30, is_te=False):
             # Don't waste memory saving a bunch of zeros if not the test set
             if is_te:
                 ys.append(torch.tensor(labels))
+
+        '''
+        # If empty timestep, just return the ID matrix weights = 1
+        else:
+            src = list(range(NUM_NODES))
+            edges.append(torch.tensor([src,src]))
+
+            cnts = torch.full((NUM_NODES,), 1)
+            weights.append(cnts)
+
+            if is_te:
+                labels = torch.zeros(cnts.size())
+                ys.append(labels)
+        '''
 
         cur_delta += delta
         prog.update()

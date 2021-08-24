@@ -224,7 +224,7 @@ def train(rrefs, kwargs, rnn_constructor, rnn_args, static):
     )
 
     times = []
-    best = (None, 0)
+    best = (None, float('inf'))
     no_progress = 0
     for e in range(kwargs['epochs']):
         # Get loss and send backward
@@ -250,13 +250,16 @@ def train(rrefs, kwargs, rnn_constructor, rnn_args, static):
         with torch.no_grad():
             zs = model.forward(TData.TRAIN, no_grad=True)
             p,n = model.score_edges(zs, TData.VAL)
+            
             auc,ap = get_score(p,n)
+            loss = model.loss_fn(zs, TData.VAL, nratio=kwargs['nratio'])
+            loss = torch.stack(loss).sum()
 
-            print("\tValidation: AP: %0.4f  AUC: %0.4f" 
-                % (ap, auc), end='')
-            tot = ap+auc
+            print("\tValidation: AP: %0.4f  AUC: %0.4f" % (ap, auc))
+            print("\tVal loss: %0.6f" % loss.item(), end='')
 
-            if tot > best[1]:
+            tot = loss.item()
+            if tot < best[1]:
                 print('*\n')
                 best = (model.save_states(), tot)
                 no_progress = 0
@@ -415,7 +418,8 @@ def test(model, h0, times, rrefs, manual=False):
         return {}
 
     scores = torch.cat(sum(scores, []), dim=0)
-    labels = torch.cat(sum(labels, []), dim=0)
+    # I have no idea why, but theres a few rogue labels of 4 in there..
+    labels = torch.cat(sum(labels, []), dim=0).clamp(max=1)
 
     anoms = scores[labels==1].sort()[0]
 
@@ -433,7 +437,6 @@ def test(model, h0, times, rrefs, manual=False):
     fp = classified[labels==0].sum()
     
     f1 = get_f1(classified, labels)
-
     auc,ap = get_score(scores[labels==0], scores[labels==1])
 
     print("Learned Cutoff %0.4f" % model.cutoff)

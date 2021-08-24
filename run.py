@@ -14,9 +14,9 @@ from spinup import run_all
 
 DEFAULT_TR = {
     'lr': 0.01,
-    'epochs': 15,
+    'epochs': 500,
     'min': 1,
-    'patience': 1,
+    'patience': 50,
     'nratio': 10,
     'val_nratio': 1,
 }
@@ -136,9 +136,9 @@ def get_args():
 
     elif args.dataset.startswith('O'):
         args.loader = optc.load_optc_dist
-        args.tr_start = 0
-        args.tr_end = optc.TIMES['tr_end']
-        args.val_times = (optc.TIMES['val_start'], optc.TIMES['val_end'])
+        args.tr_start = 0 #optc.TIMES['val_start']
+        args.tr_end = optc.TIMES['val_end']
+        args.val_times = None #(optc.TIMES['val_start'], optc.TIMES['val_end'])
         args.te_times = [optc.DAY1, optc.DAY2, optc.DAY3]
         args.delta = int(args.delta * 60)
         args.manual = False 
@@ -225,6 +225,6 @@ if __name__ == '__main__':
 
         f.write('[%d]:\n' % i)        
         f.write(str(compressed) + '\n')
-        f.write(full + '\n\n')
+        f.write(full + '\n')
 
     f.close()

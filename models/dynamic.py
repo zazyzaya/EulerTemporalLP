@@ -83,6 +83,8 @@ class DynamicEncoder(Euler_Encoder):
         # Z_0 is aligned with E_1 to be used for prediction
         for i in range(self.is_head, len(z)):
             p = self.module.data.ei_masked(partition, i)
+            if p.size(0) == 0:
+                continue
 
             p_scores.append(self.decode(p, z[i]))
             n_scores.append(self.decode(n[i-self.is_head], z[i]))
@@ -115,8 +117,15 @@ class DynamicEncoder(Euler_Encoder):
         )
 
         for i in range(self.is_head, len(z)):
+
+            # Edge case. Prevents nan errors when not enough edges
+            # only happens with very small timewindows 
+            ps = self.module.data.ei_masked(partition, i)
+            if ps.size(1) == 0:
+                continue
+
             tot_loss += self.bce(
-                self.decode(self.module.data.ei_masked(partition, i), z[i]),
+                self.decode(ps, z[i]),
                 self.decode(ns[i-self.is_head], z[i])
             )
 

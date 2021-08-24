@@ -59,6 +59,8 @@ class StaticEncoder(Euler_Encoder):
 
         for i in range(len(z)):
             p = self.module.data.ei_masked(partition, i)
+            if p.size(1) == 0:
+                continue
 
             p_scores.append(self.decode(p, z[i]))
             n_scores.append(self.decode(n[i], z[i]))
@@ -88,8 +90,15 @@ class StaticEncoder(Euler_Encoder):
         ns = self.module.data.get_negative_edges(partition, nratio)
 
         for i in range(len(z)):
+            ps = self.module.data.ei_masked(partition, i)
+            
+            # Edge case. Prevents nan errors when not enough edges
+            # only happens with very small timewindows 
+            if ps.size(1) == 0:
+                continue
+
             tot_loss += self.bce(
-                self.decode(self.module.data.ei_masked(partition, i), z[i]),
+                self.decode(ps, z[i]),
                 self.decode(ns[i], z[i])
             )
 
