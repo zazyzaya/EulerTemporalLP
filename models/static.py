@@ -177,7 +177,7 @@ class StaticRecurrent(Euler_Recurrent):
         for f in futs:
             tot_loss += f.wait()
 
-        return [tot_loss.true_divide(sum(self.len_from_each))]
+        return [tot_loss.true_divide(sum(self.num_workers))]
         
 
     def score_edges(self, zs, partition, nratio=1):
