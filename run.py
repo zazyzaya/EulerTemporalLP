@@ -10,6 +10,7 @@ from models.embedders import \
     static_gcn_rref, static_gat_rref, static_sage_rref, \
     dynamic_gcn_rref, dynamic_gat_rref, dynamic_sage_rref 
 
+from models.ugaed import mean_gcn_rref
 from spinup import run_all
 
 DEFAULT_TR = {
@@ -95,8 +96,9 @@ def get_args():
     )
 
     ap.add_argument(
-        '--pred', '-p',
-        action='store_true'
+        '--impl', '-i',
+        type=str.upper,
+        choices=['S', 'STATIC', 'D', 'DYNAMIC', 'U', 'UNIFIED']
     )
 
     ap.add_argument(
@@ -113,7 +115,8 @@ def get_args():
     readable = str(args)
     print(readable)
 
-    static = not args.pred
+    impl = args.impl[0]
+    args.static = impl
     
     # Parse dataset info 
     if args.dataset.startswith('L'):
@@ -151,14 +154,17 @@ def get_args():
 
     # Convert from str to function pointer
     if args.encoder == 'GCN':
-        args.encoder = static_gcn_rref if static \
+        args.encoder = static_gcn_rref if impl == 'S' \
             else dynamic_gcn_rref
     elif args.encoder == 'GAT':
-        args.encoder = static_gat_rref if static \
+        args.encoder = static_gat_rref if impl == 'S' \
             else dynamic_gat_rref
     else:
-        args.encoder = static_sage_rref if static \
+        args.encoder = static_sage_rref if impl == 'S' \
             else dynamic_sage_rref
+
+    if impl == 'U':
+        args.encoder = mean_gcn_rref
 
     if args.rnn == 'GRU':
         args.rnn = GRU
@@ -192,7 +198,7 @@ if __name__ == '__main__':
             args.delta,
             args.load,
             args.fpweight,
-            not args.pred,
+            args.static,
             args.loader, 
             args.tr_start,
             args.tr_end, 

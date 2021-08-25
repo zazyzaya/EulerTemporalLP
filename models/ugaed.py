@@ -8,7 +8,7 @@ from torch_geometric.nn import MessagePassing
 from .embedders import GCN 
 from .framework import Euler_Embed_Unit
 from .recurrent import EmptyModel
-from .static import StaticEncoder, StaticRecurrent
+from .framework import Euler_Encoder, Euler_Recurrent
 from .utils import _remote_method, _remote_method_async, _param_rrefs
 
 '''
@@ -71,7 +71,12 @@ class MeanGCN(GCN):
         x = torch.softmax(self.prob_distro(x))
         return x 
 
-class UGAEDEncoder(StaticEncoder):
+def mean_gcn_rref(loader, kwargs, h_dim, z_dim, **kws):
+    return UGAEDEncoder(
+        MeanGCN(loader, kwargs, h_dim, z_dim)
+    )
+
+class UGAEDEncoder(Euler_Encoder):
     def __init__(self, module: Euler_Embed_Unit, **kwargs):
         super().__init__(module, **kwargs)
         self.cross_entropy = nn.CrossEntropyLoss()
@@ -105,18 +110,34 @@ class UGAEDEncoder(StaticEncoder):
 
         return torch.stack(losses).mean()
 
-    # Score_Edges should actually work with no changes since 
-    # z is just a list of indices
+    def score_edges(self, z, partition, nratio):
+        n = self.module.data.get_negative_edges(partition, nratio)
+
+        p_scores = []
+        n_scores = []
+
+        for i in range(len(self.module.distros)):
+            p = self.module.data.ei_masked(partition, i)
+            if p.size(1) == 0:
+                continue
+
+            p_scores.append(self.decode(p, i))
+            n_scores.append(self.decode(n[i], i))
+
+        p_scores = torch.cat(p_scores, dim=0)
+        n_scores = torch.cat(n_scores, dim=0)
+
+        return p_scores, n_scores
 
     def forward(self, mask_enum, no_grad):
         # Saves all matrices here to avoid net traffic
         super().forward(mask_enum, no_grad)
 
-        # Returns a list of indices so Leader gets to feel special
-        return list(range(len(self.module.distros)))
+        # Returns a count of the number of pdfs it holds
+        return [len(self.module.distros)]
 
 
-class UGAED_Recurrent(StaticRecurrent):
+class UGAEDRecurrent(Euler_Recurrent):
     def __init__(self, rnn: nn.Module, remote_rrefs: list):
         # Just ignore whatever RNN user wants, we aren't using it
         super().__init__(EmptyModel, remote_rrefs)
@@ -130,7 +151,7 @@ class UGAED_Recurrent(StaticRecurrent):
         for i in range(self.num_workers):
             futs.append(
                 _remote_method_async(
-                    StaticEncoder.decode_all,
+                    UGAEDEncoder.decode_all,
                     self.gcns[i],
                     None
                 )
@@ -140,7 +161,7 @@ class UGAED_Recurrent(StaticRecurrent):
         scores = [f.wait() for f in futs]
         ys = [
             _remote_method(
-                StaticEncoder.get_data_field,
+                UGAEDEncoder.get_data_field,
                 self.gcns[i],
                 'ys'
             ) for i in range(self.num_workers)
@@ -148,13 +169,41 @@ class UGAED_Recurrent(StaticRecurrent):
 
         return scores, ys
 
-    # TODO 
     def loss_fn(self, zs, partition, nratio):
-        pass 
+        futs = []
+    
+        for i in range(self.num_workers):
+            futs.append(
+                _remote_method_async(
+                    UGAEDEncoder.calc_loss,
+                    self.gcns[i],
+                    None,
+                    partition, nratio
+                )
+            )
 
-    # TODO
+        tot_loss = torch.zeros(1)
+        for f in futs:
+            tot_loss += f.wait()
+
+        return [tot_loss.true_divide(sum(self.num_workers))]
+
+
     def score_edges(self, zs, partition, nratio):
-        pass
+        futs = []
+    
+        for i in range(self.num_workers):
+            futs.append(
+                _remote_method_async(
+                    UGAEDEncoder.score_edges,
+                    self.gcns[i],
+                    None, 
+                    partition, nratio
+                )
+            )
+
+        pos, neg = zip(*[f.wait() for f in futs])
+        return torch.cat(pos, dim=0), torch.cat(neg, dim=0)
 
     ###################################################################
     #    Stuff from the original framework that needed to be changed  #
