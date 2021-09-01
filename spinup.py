@@ -227,7 +227,7 @@ def train(rrefs, kwargs, rnn_constructor, rnn_args, impl):
     )
 
     times = []
-    best = (None, float('inf'))
+    best = (None, 0)
     no_progress = 0
     for e in range(kwargs['epochs']):
         # Get loss and send backward
@@ -258,11 +258,11 @@ def train(rrefs, kwargs, rnn_constructor, rnn_args, impl):
             loss = model.loss_fn(zs, TData.VAL, nratio=kwargs['nratio'])
             loss = torch.stack(loss).sum()
 
-            print("\tValidation: AP: %0.4f  AUC: %0.4f" % (ap, auc))
-            print("\tVal loss: %0.6f" % loss.item(), end='')
+            print("\tVal loss: %0.6f" % loss.item())
+            print("\tValidation: AP: %0.4f  AUC: %0.4f" % (ap, auc), end='')
 
-            tot = loss.item()
-            if tot < best[1]:
+            tot = auc+ap
+            if tot > best[1]:
                 print('*\n')
                 best = (model.save_states(), tot)
                 no_progress = 0

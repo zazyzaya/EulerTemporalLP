@@ -17,7 +17,7 @@ DEFAULT_TR = {
     'lr': 0.01,
     'epochs': 500,
     'min': 1,
-    'patience': 50,
+    'patience': 10,
     'nratio': 10,
     'val_nratio': 1,
 }
