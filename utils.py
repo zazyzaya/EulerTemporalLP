@@ -15,7 +15,7 @@ def get_score(nscore, pscore):
     ntp = pscore.size(0)
     ntn = nscore.size(0)
 
-    score = (1-torch.cat([pscore, nscore])).numpy()
+    score = (1-torch.cat([pscore.detach(), nscore.detach()])).numpy()
     print(score.max())
     print(score.min())
     labels = np.zeros(ntp + ntn, dtype=np.long)
@@ -59,7 +59,7 @@ def get_optimal_cutoff(pscore, nscore, fw=0.5):
 
     tw = 1-fw
 
-    score = torch.cat([pscore, nscore]).numpy()
+    score = torch.cat([pscore.detach(), nscore.detach()]).numpy()
     labels = np.zeros(ntp + ntn, dtype=np.long)
     labels[:ntp] = 1
 

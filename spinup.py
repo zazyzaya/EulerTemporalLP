@@ -14,6 +14,7 @@ from torch.optim import Adam
 from loaders.tdata import TData
 from models.static import StaticEncoder, StaticRecurrent 
 from models.dynamic import DynamicEncoder, DynamicRecurrent
+from models.ugaed import UGAEDEncoder, UGAEDRecurrent
 from models.utils import _remote_method_async, _remote_method
 from models.embedders import static_gcn_rref
 from models.recurrent import GRU 
@@ -122,7 +123,7 @@ def init_empty_workers(num_workers, worker_constructor, worker_args):
     return rrefs
 
 def init_procs(rank, world_size, rnn_constructor, rnn_args, worker_constructor, worker_args, 
-                times, just_test, lambda_param, static, load_fn, manual, tr_args):
+                times, just_test, lambda_param, impl, load_fn, manual, tr_args):
     # DDP info
     os.environ['MASTER_ADDR'] = 'localhost'
     os.environ['MASTER_PORT'] = '42069'
@@ -154,8 +155,9 @@ def init_procs(rank, world_size, rnn_constructor, rnn_args, worker_constructor, 
             )
 
             rnn = rnn_constructor(*rnn_args)
-            model = StaticRecurrent(rnn, rrefs) if static\
-                else DynamicRecurrent(rnn, rrefs)
+            model = StaticRecurrent(rnn, rrefs) if impl=='S'\
+                else DynamicRecurrent(rnn, rrefs) if impl=='D'\
+                else UGAEDRecurrent(rnn, rrefs)
 
             states = pickle.load(open('model_save.pkl', 'rb'))
             model.load_states(states['gcn'], states['rnn'])
@@ -171,7 +173,7 @@ def init_procs(rank, world_size, rnn_constructor, rnn_args, worker_constructor, 
                 worker_constructor, worker_args
             )
 
-            model, h0, tpe = train(rrefs, tr_args, rnn_constructor, rnn_args, static)
+            model, h0, tpe = train(rrefs, tr_args, rnn_constructor, rnn_args, impl)
 
         
         h0, zs = get_cutoff(model, h0, times, tr_args, lambda_param)
@@ -214,17 +216,18 @@ def init_procs(rank, world_size, rnn_constructor, rnn_args, worker_constructor, 
         pickle.dump(stats, open(TMP_FILE, 'wb+'), protocol=pickle.HIGHEST_PROTOCOL)
 
 
-def train(rrefs, kwargs, rnn_constructor, rnn_args, static):
+def train(rrefs, kwargs, rnn_constructor, rnn_args, impl):
     rnn = rnn_constructor(*rnn_args)
-    model = StaticRecurrent(rnn, rrefs) if static \
-        else DynamicRecurrent(rnn, rrefs)
+    model = StaticRecurrent(rnn, rrefs) if impl=='S' \
+        else DynamicRecurrent(rnn, rrefs) if impl=='D' \
+        else UGAEDRecurrent(rnn, rrefs)
 
     opt = DistributedOptimizer(
         Adam, model.parameter_rrefs(), lr=kwargs['lr']
     )
 
     times = []
-    best = (None, float('inf'))
+    best = (None, 0)
     no_progress = 0
     for e in range(kwargs['epochs']):
         # Get loss and send backward
@@ -255,11 +258,11 @@ def train(rrefs, kwargs, rnn_constructor, rnn_args, static):
             loss = model.loss_fn(zs, TData.VAL, nratio=kwargs['nratio'])
             loss = torch.stack(loss).sum()
 
-            print("\tValidation: AP: %0.4f  AUC: %0.4f" % (ap, auc))
-            print("\tVal loss: %0.6f" % loss.item(), end='')
+            print("\tVal loss: %0.6f" % loss.item())
+            print("\tValidation: AP: %0.4f  AUC: %0.4f" % (ap, auc), end='')
 
-            tot = loss.item()
-            if tot < best[1]:
+            tot = auc+ap
+            if tot > best[1]:
                 print('*\n')
                 best = (model.save_states(), tot)
                 no_progress = 0
@@ -294,7 +297,8 @@ def get_cutoff(model, h0, times, kwargs, lambda_param):
     # Weirdly, calling the parent class' method doesn't work
     # whatever. This is a hacky solution, but it works
     Encoder = StaticEncoder if isinstance(model, StaticRecurrent) \
-        else DynamicEncoder
+        else DynamicEncoder if isinstance(model, DynamicRecurrent) \
+        else UGAEDEncoder
 
     # First load validation data onto one of the GCNs
     _remote_method(
@@ -342,7 +346,8 @@ def test(model, h0, times, rrefs, manual=False):
     # the parent object's methods. Kind of defeats the purpose of 
     # using OOP at all IMO, but whatever
     Encoder = StaticEncoder if isinstance(model, StaticRecurrent) \
-        else DynamicEncoder
+        else DynamicEncoder if isinstance(model, DynamicRecurrent) \
+        else UGAEDEncoder
 
     # Load train data into workers
     ld_args = get_work_units(
@@ -461,7 +466,7 @@ def test(model, h0, times, rrefs, manual=False):
     }
 
 def run_all(workers, rnn_constructor, rnn_args, worker_constructor, 
-            worker_args, delta, just_test, lambda_param, static, load_fn, 
+            worker_args, delta, just_test, lambda_param, impl, load_fn, 
             tr_start, tr_end, val_times, te_times, manual, tr_args):
     '''
     Starts up proceses, trains validates and tests the model given 
@@ -484,9 +489,9 @@ def run_all(workers, rnn_constructor, rnn_args, worker_constructor,
         lambda_param : float
             How much weight to give low FPR when deciding a cutoff;
             defaults to 0.6
-        static : bool 
-            Whether or not the encoders are static. Has implications on 
-            how data is loaded to modules
+        impl : char in ['S', 'D', 'U']
+            Class implimenting Framework classes; as of right now, 
+            only (S)tatic, (D)ynamic, and (U)nified
         load_fn : callable -> TGraph
             Function to load a set of snapshots into workers
         tr_start : int
@@ -538,7 +543,7 @@ def run_all(workers, rnn_constructor, rnn_args, worker_constructor,
             times,
             just_test,
             lambda_param,
-            static,
+            impl,
             load_fn,
             manual,
             tr_args
