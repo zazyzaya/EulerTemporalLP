@@ -14,7 +14,7 @@ from torch.optim import Adam
 from loaders.tdata import TData
 from models.static import StaticEncoder, StaticRecurrent 
 from models.dynamic import DynamicEncoder, DynamicRecurrent
-from models.ugaed import UGAEDEncoder, UGAEDRecurrent
+from models.tedge import TEdgeEncoder, TEdgeRecurrent
 from models.utils import _remote_method_async, _remote_method
 from models.embedders import static_gcn_rref
 from models.recurrent import GRU 
@@ -157,7 +157,7 @@ def init_procs(rank, world_size, rnn_constructor, rnn_args, worker_constructor, 
             rnn = rnn_constructor(*rnn_args)
             model = StaticRecurrent(rnn, rrefs) if impl=='S'\
                 else DynamicRecurrent(rnn, rrefs) if impl=='D'\
-                else UGAEDRecurrent(rnn, rrefs)
+                else TEdgeRecurrent(rnn, rrefs)
 
             states = pickle.load(open('model_save.pkl', 'rb'))
             model.load_states(states['gcn'], states['rnn'])
@@ -220,7 +220,7 @@ def train(rrefs, kwargs, rnn_constructor, rnn_args, impl):
     rnn = rnn_constructor(*rnn_args)
     model = StaticRecurrent(rnn, rrefs) if impl=='S' \
         else DynamicRecurrent(rnn, rrefs) if impl=='D' \
-        else UGAEDRecurrent(rnn, rrefs)
+        else TEdgeRecurrent(rnn, rrefs)
 
     opt = DistributedOptimizer(
         Adam, model.parameter_rrefs(), lr=kwargs['lr']
@@ -298,7 +298,7 @@ def get_cutoff(model, h0, times, kwargs, lambda_param):
     # whatever. This is a hacky solution, but it works
     Encoder = StaticEncoder if isinstance(model, StaticRecurrent) \
         else DynamicEncoder if isinstance(model, DynamicRecurrent) \
-        else UGAEDEncoder
+        else TEdgeEncoder
 
     # First load validation data onto one of the GCNs
     _remote_method(
@@ -347,7 +347,7 @@ def test(model, h0, times, rrefs, manual=False):
     # using OOP at all IMO, but whatever
     Encoder = StaticEncoder if isinstance(model, StaticRecurrent) \
         else DynamicEncoder if isinstance(model, DynamicRecurrent) \
-        else UGAEDEncoder
+        else TEdgeEncoder
 
     # Load train data into workers
     ld_args = get_work_units(

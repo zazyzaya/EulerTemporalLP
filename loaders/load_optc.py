@@ -40,6 +40,7 @@ TIMES = {
 DAY1 = (8845, 9876)
 DAY2 = (10831, 11756)
 DAY3 = (11756, 12635)
+ALL = (DAY1[0], DAY3[1])
 
 # Spans of time with no data at all
 DEAD_ZONES = [
@@ -355,7 +356,7 @@ def load_optc(start=0, end=None, delta=30, is_te=False):
     return edges, weights, ys if is_te else None
 
 
-def load_optc_list_dist(workers, start, end, delta=30):
+def load_optc_list_dist(workers, start=0, end=1, delta=30):
     # Just run normally if only 1 worker
     if workers <= 1: 
         eis, ys = load_optc_list(

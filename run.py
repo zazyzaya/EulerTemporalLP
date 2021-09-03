@@ -98,7 +98,7 @@ def get_args():
     ap.add_argument(
         '--impl', '-i',
         type=str.upper,
-        choices=['S', 'STATIC', 'D', 'DYNAMIC', 'U', 'UNIFIED']
+        choices=['S', 'STATIC', 'D', 'DYNAMIC', 'T', 'TEDGE']
     )
 
     ap.add_argument(
@@ -163,7 +163,7 @@ def get_args():
         args.encoder = static_sage_rref if impl == 'S' \
             else dynamic_sage_rref
 
-    if impl == 'U':
+    if impl == 'T':
         args.encoder = mean_gcn_rref
 
     if args.rnn == 'GRU':

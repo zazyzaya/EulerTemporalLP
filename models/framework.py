@@ -85,6 +85,13 @@ class Euler_Encoder(DDP):
         self.module.data = loader(jobs, **kwargs)
         return True
 
+    def load_test_data(self, loader, kwargs):
+        print(rpc.get_worker_info().name + ": Loading %d - %d for testing" 
+            % (kwargs['start'], kwargs['end']))
+        
+        jobs = kwargs.pop('jobs')
+        self.module.test_data = loader(jobs, **kwargs)
+        return True
     
     def get_data_field(self, field):
         '''

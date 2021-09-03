@@ -9,8 +9,6 @@ from torch_geometric.nn import MessagePassing
 from zayas_graph_modules.samplers import SampleMean
 
 from .embedders import GCN 
-from .framework import Euler_Embed_Unit
-from .recurrent import EmptyModel
 from .framework import Euler_Encoder, Euler_Recurrent
 from .utils import _remote_method, _remote_method_async, _param_rrefs
 
@@ -83,11 +81,11 @@ class TEdgeConv(GCN):
 
 
 def mean_gcn_rref(loader, kwargs, h_dim, z_dim, **kws):
-    return UGAEDEncoder(
+    return TEdgeEncoder(
         TEdgeConv(loader, kwargs, h_dim, z_dim)
     )
 
-class UGAEDEncoder(Euler_Encoder):
+class TEdgeEncoder(Euler_Encoder):
     def detect_anoms(self, zs, partition):
         H = []
         tot_loss = torch.zeros((1))
@@ -184,7 +182,7 @@ class UGAEDEncoder(Euler_Encoder):
         return tot_loss.true_divide(len(z))
 
 
-class UGAEDRecurrent(Euler_Recurrent):
+class TEdgeRecurrent(Euler_Recurrent):
     def forward(self, mask_enum, include_h=False, h0=None, no_grad=False):
         if include_h:
             z, h = super().forward(mask_enum, include_h=include_h, h0=h0, no_grad=no_grad)
@@ -199,7 +197,7 @@ class UGAEDRecurrent(Euler_Recurrent):
             end = start + self.len_from_each[i]
             futs.append(
                 _remote_method_async(
-                    UGAEDEncoder.detect_anoms,
+                    TEdgeEncoder.detect_anoms,
                     self.gcns[i],
                     Variable(z[start : end]), 
                     mask_enum
@@ -234,7 +232,7 @@ class UGAEDRecurrent(Euler_Recurrent):
         '''
         futs = [
             _remote_method_async(
-                UGAEDEncoder.decode_all,
+                TEdgeEncoder.decode_all,
                 self.gcns[i],
                 self.H[i]
             )
@@ -243,7 +241,7 @@ class UGAEDRecurrent(Euler_Recurrent):
         scores = [f.wait() for f in futs]
         ys = [
             _remote_method(
-                UGAEDEncoder.get_data_field,
+                TEdgeEncoder.get_data_field,
                 self.gcns[i],
                 'ys'
             ) for i in range(self.num_workers)
@@ -274,7 +272,7 @@ class UGAEDRecurrent(Euler_Recurrent):
             end = start + self.len_from_each[i]
             futs.append(
                 _remote_method_async(
-                    UGAEDEncoder.calc_loss,
+                    TEdgeEncoder.calc_loss,
                     self.gcns[i],
                     zs[start : end],
                     partition, nratio
@@ -308,7 +306,7 @@ class UGAEDRecurrent(Euler_Recurrent):
     
         futs = [
             _remote_method_async(
-                UGAEDEncoder.score_edges,
+                TEdgeEncoder.score_edges,
                 self.gcns[i],
                 self.H[i], 
                 partition, nratio
