@@ -84,20 +84,29 @@ class Euler_Encoder(DDP):
         jobs = kwargs.pop('jobs')
         self.module.data = loader(jobs, **kwargs)
         return True
-
-    def load_test_data(self, loader, kwargs):
-        print(rpc.get_worker_info().name + ": Loading %d - %d for testing" 
-            % (kwargs['start'], kwargs['end']))
-        
-        jobs = kwargs.pop('jobs')
-        self.module.test_data = loader(jobs, **kwargs)
-        return True
     
     def get_data_field(self, field):
         '''
         Return some field from this worker's data object
         '''
         return self.module.data.__getattribute__(field)
+
+
+    def decompress_scores(self, scores):
+        '''
+        Repeats scores as many times as that edge appears for better
+        validation/testing. Otherwise edges that occur multiple times in
+        a single timestep are compressed into a single weighted edge, and 
+        multiple instances of the same sample are not evaluated accurately
+        '''
+        r_scores = []
+        r_ys = []
+        for i in range(self.module.data.T):
+            counts = self.module.data.cnt[i]
+            r_scores.append(torch.repeat_interleave(scores[i], counts, dim=0))
+            r_ys.append(torch.repeat_interleave(self.module.data.ys[i], counts, dim=0))
+
+        return r_scores, r_ys
 
     
     def run_arbitrary_fn(self, fn, *args, **kwargs):
@@ -157,7 +166,7 @@ class Euler_Encoder(DDP):
         raise NotImplementedError
 
     
-    def decode_all(self, zs):
+    def decode_all(self, zs, unsqueeze=False):
         '''
         Given node embeddings, return edge likelihoods for all edges in snapshots held by this model. 
         Implimented differently for predictive and static models
@@ -379,7 +388,7 @@ class Euler_Recurrent(nn.Module):
         ) for i in range(self.num_workers)]
 
     
-    def score_all(self, zs):
+    def score_all(self, zs, unsqueeze=False):
         '''
         Has the distributed models score and label all of their edges
         Need to change which zs are given to workers depending on if 

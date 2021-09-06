@@ -163,6 +163,7 @@ def init_procs(rank, world_size, rnn_constructor, rnn_args, worker_constructor, 
             model.load_states(states['gcn'], states['rnn'])
             h0 = states['h0']
             tpe = 0
+            tr_time = 0
 
 
         # Building and training a fresh model
@@ -173,8 +174,9 @@ def init_procs(rank, world_size, rnn_constructor, rnn_args, worker_constructor, 
                 worker_constructor, worker_args
             )
 
+            tmp = time.time()
             model, h0, tpe = train(rrefs, tr_args, rnn_constructor, rnn_args, impl)
-
+            tr_time = time.time() - tmp
         
         h0, zs = get_cutoff(model, h0, times, tr_args, lambda_param)
         stats = []
@@ -185,8 +187,9 @@ def init_procs(rank, world_size, rnn_constructor, rnn_args, worker_constructor, 
                 'te_end': te_end,
                 'delta': times['delta']
             }
-            st = test(model, h0, test_times, rrefs, manual=manual)
+            st = test(model, h0, test_times, rrefs, manual=manual, unsqueeze=tr_args['decompress'])
             st['TPE'] = tpe
+            st['tr_time'] = tr_time
 
             stats.append(st)
 
@@ -341,7 +344,7 @@ def get_cutoff(model, h0, times, kwargs, lambda_param):
     return h0, zs[-1]
 
 
-def test(model, h0, times, rrefs, manual=False):
+def test(model, h0, times, rrefs, manual=False, unsqueeze=False):
     # For whatever reason, it doesn't know what to do if you call
     # the parent object's methods. Kind of defeats the purpose of 
     # using OOP at all IMO, but whatever
@@ -390,7 +393,7 @@ def test(model, h0, times, rrefs, manual=False):
 
     # Scores all edges and matches them with name/timestamp
     print("Scoring")
-    scores, labels = model.score_all(zs)
+    scores, labels = model.score_all(zs, unsqueeze=unsqueeze)
 
     # Then reset model to having all workers for future tests
     model.num_workers = len(rrefs)
@@ -422,9 +425,9 @@ def test(model, h0, times, rrefs, manual=False):
 
         return {}
 
-    scores = torch.cat(sum(scores, []), dim=0)
-    # I have no idea why, but theres a few rogue labels of 4 in there..
-    labels = torch.cat(sum(labels, []), dim=0).clamp(max=1)
+    scores = torch.cat(scores, dim=0)
+    # I have no idea why, but theres a few rogue labels of 4 in OpTC..
+    labels = torch.cat(labels, dim=0).clamp(max=1)
 
     anoms = scores[labels==1].sort()[0]
 

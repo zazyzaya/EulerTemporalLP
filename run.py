@@ -10,7 +10,7 @@ from models.embedders import \
     static_gcn_rref, static_gat_rref, static_sage_rref, \
     dynamic_gcn_rref, dynamic_gat_rref, dynamic_sage_rref 
 
-from models.ugaed import mean_gcn_rref
+from models.tedge import tedge_rref
 from spinup import run_all
 
 DEFAULT_TR = {
@@ -20,10 +20,13 @@ DEFAULT_TR = {
     'patience': 10,
     'nratio': 10,
     'val_nratio': 1,
+    'decompress': True
 }
 
 HOME = '/mnt/raid0_24TB/isaiah/code/EulerTemporalLP/'
 def get_args():
+    global DEFAULT_TR
+
     ap = ArgumentParser()
 
     ap.add_argument(
@@ -108,6 +111,11 @@ def get_args():
         choices=['LANL', 'L', 'PICO', 'P', 'OPTC', 'O']
     )
 
+    ap.add_argument(
+        '--compressed',
+        action='store_false'
+    )
+
     args = ap.parse_args()
     args.te_end = None
     assert args.fpweight >= 0 and args.fpweight <=1, '--fpweight must be a value between 0 and 1 (inclusive)'
@@ -117,6 +125,7 @@ def get_args():
 
     impl = args.impl[0]
     args.static = impl
+    DEFAULT_TR['decompress'] = args.compressed
     
     # Parse dataset info 
     if args.dataset.startswith('L'):
@@ -142,7 +151,7 @@ def get_args():
         args.tr_start = 0 #optc.TIMES['val_start']
         args.tr_end = optc.TIMES['val_end']
         args.val_times = None #(optc.TIMES['val_start'], optc.TIMES['val_end'])
-        args.te_times = [optc.DAY1, optc.DAY2, optc.DAY3]
+        args.te_times = [optc.DAY1, optc.DAY2, optc.DAY3, optc.ALL]
         args.delta = int(args.delta * 60)
         args.manual = False 
 
@@ -164,7 +173,7 @@ def get_args():
             else dynamic_sage_rref
 
     if impl == 'T':
-        args.encoder = mean_gcn_rref
+        args.encoder = tedge_rref
 
     if args.rnn == 'GRU':
         args.rnn = GRU
