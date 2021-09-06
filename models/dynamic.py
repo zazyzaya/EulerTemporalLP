@@ -32,7 +32,7 @@ class DynamicEncoder(Euler_Encoder):
             print("%s is head" % rpc.get_worker_info().name)
 
 
-    def decode_all(self, zs):
+    def decode_all(self, zs, unsqueeze=False):
         '''
             Given node embeddings, return edge likelihoods for 
         all subgraphs held by this model
@@ -46,13 +46,18 @@ class DynamicEncoder(Euler_Encoder):
             it is safe to assume z[n] are the embeddings for nodes in the 
             snapshot held by this model's TGraph at timestep n
         '''
-        preds = []
+        preds,ys = [], []
         for i in range(self.module.data.T-self.is_head):
             preds.append(
                 self.decode(self.module.data.eis[i+self.is_head], zs[i+self.is_head])
             )
+            if not unsqueeze:
+                ys.append(self.module.data.ys[i])
 
-        return preds
+        if unsqueeze:
+            return self.decompress_scores(preds)
+
+        return preds, ys
 
     
     def score_edges(self, z, partition, nratio):
@@ -145,7 +150,7 @@ class DynamicRecurrent(Euler_Recurrent):
     that worker knows to ignore
     '''
 
-    def score_all(self, zs):
+    def score_all(self, zs, unsqueeze=False):
         '''
         Has the distributed models score and label all of their edges
         For dynamic, we append a dummy Z_{-1} value that's ignored in 
@@ -169,23 +174,18 @@ class DynamicRecurrent(Euler_Recurrent):
                 _remote_method_async(
                     DynamicEncoder.decode_all,
                     self.gcns[i],
-                    zs[start : end]
+                    zs[start : end],
+                    unsqueeze=unsqueeze
                 )
             )
             start = end 
 
-        scores = [f.wait() for f in futs]
-        ys = [
-            _remote_method(
-                DynamicEncoder.get_data_field,
-                self.gcns[i],
-                'ys'
-            ) for i in range(self.num_workers)
-        ]
-
-        # Remove labels for edgelist 0 as it has no embeddings 
-        # it can be compared to 
-        ys[0] = ys[0][1:]
+        obj = [f.wait() for f in futs]
+        scores, ys = zip(*obj)
+        
+        # Compress into single list of snapshots
+        scores = sum(scores, [])
+        ys = sum(ys, [])
         return scores, ys
 
 

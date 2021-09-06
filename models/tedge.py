@@ -80,7 +80,7 @@ class TEdgeConv(GCN):
         return self.anom_detector.score(H, ei)
 
 
-def mean_gcn_rref(loader, kwargs, h_dim, z_dim, **kws):
+def tedge_rref(loader, kwargs, h_dim, z_dim, **kws):
     return TEdgeEncoder(
         TEdgeConv(loader, kwargs, h_dim, z_dim)
     )
@@ -119,7 +119,7 @@ class TEdgeEncoder(Euler_Encoder):
 
         return p_scores, n_scores
 
-    def decode_all(self, H):
+    def decode_all(self, H, unsqueeze=False):
         '''
         Given node embeddings, return edge likelihoods for 
         all subgraphs held by this model
@@ -139,13 +139,18 @@ class TEdgeEncoder(Euler_Encoder):
             "%s was given more embeddings than it has time slices"\
             % rpc.get_worker_info().name
 
-        preds = []
+        preds, ys = [], []
         for i in range(self.module.data.T):
             preds.append(
                 self.module.score(H[i], self.module.data.eis[i])
             )
+            if not unsqueeze:
+                ys.append(self.module.data.ys[i])
 
-        return preds
+        if unsqueeze:
+            return self.decompress_scores(preds)
+
+        return preds, ys
 
     def calc_loss(self, z, partition, nratio):
         '''
@@ -219,7 +224,7 @@ class TEdgeRecurrent(Euler_Recurrent):
         else: 
             return z
 
-    def score_all(self, *args):
+    def score_all(self, *args, unsqueeze=False):
         '''
         Has the distributed models score and label all of their edges
         Sends workers embeddings such that H[n] is used to reconstruct graph at 
@@ -234,18 +239,17 @@ class TEdgeRecurrent(Euler_Recurrent):
             _remote_method_async(
                 TEdgeEncoder.decode_all,
                 self.gcns[i],
-                self.H[i]
+                self.H[i],
+                unsqueeze=unsqueeze
             )
         for i in range(self.num_workers) ]
 
-        scores = [f.wait() for f in futs]
-        ys = [
-            _remote_method(
-                TEdgeEncoder.get_data_field,
-                self.gcns[i],
-                'ys'
-            ) for i in range(self.num_workers)
-        ]
+        obj = [f.wait() for f in futs]
+        scores, ys = zip(*obj)
+        
+        # Compress into single list of snapshots
+        scores = sum(scores, [])
+        ys = sum(ys, [])
 
         return scores, ys
 

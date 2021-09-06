@@ -1,5 +1,6 @@
-import math
+from copy import deepcopy
 from joblib import Parallel, delayed
+import math
 import os.path
 
 import pickle
@@ -158,12 +159,13 @@ def load_optc_dist(workers, start=0, end=None, delta=30, is_test=False, weight_f
     )
 
     # Merge all lists into one list of snapshot datas
-    eis, ews, ys, masks = [], [], [], []
+    eis, ews, ys, masks, cnt = [], [], [], [], []
     for s in snapshots:
         eis.append(s['eis'])
         ews.append(s['ews'])
         ys.append(s['ys'])
         masks.append(s['masks'])
+        cnt.append(s['cnt'])
 
     # Then return the TData object
     return TData(
@@ -171,12 +173,22 @@ def load_optc_dist(workers, start=0, end=None, delta=30, is_test=False, weight_f
         torch.eye(NUM_NODES), 
         sum(ys, []) if is_test else None,
         sum(masks, []),
-        ews=sum(ews, [])
+        ews=sum(ews, []),
+        cnt=sum(cnt, []) if is_test else None
     )
 
 
 def optc_job(kwargs, weight_fn):
     eis, ews, ys = load_optc(**kwargs)
+    
+    # Before compressing into weighted edges, save
+    # raw count of edges for later testing so repeated edges
+    # are scored each time they appear
+    if ys is not None:
+        cnt = deepcopy(ews)
+    else:
+        cnt = None 
+
     ews = weight_fn(ews)
     masks = [edge_tv_split(ei)[0] for ei in eis]
 
@@ -184,11 +196,17 @@ def optc_job(kwargs, weight_fn):
         'eis': eis, 
         'ews': ews, 
         'ys': ys, 
-        'masks': masks
+        'masks': masks,
+        'cnt': cnt
     }
 
 
 def build_data_obj(eis, ews, ys, weight_fn):
+    if ys is not None:
+        cnt = deepcopy(ews)
+    else:
+        cnt = None
+
     ews = weight_fn(ews)
     
     # Only build masks if training
@@ -200,7 +218,8 @@ def build_data_obj(eis, ews, ys, weight_fn):
         torch.eye(NUM_NODES),
         ys, 
         masks, 
-        ews=ews
+        ews=ews,
+        cnt=cnt
     )
 
 

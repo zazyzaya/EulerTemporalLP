@@ -1,3 +1,4 @@
+from copy import deepcopy
 import os 
 import pickle 
 from joblib import Parallel, delayed
@@ -85,14 +86,16 @@ def load_lanl_dist(workers, start=0, end=635015, delta=8640, is_test=False, ew_f
 
     if is_test:
         ys = data_reduce('ys')
+        cnt = data_reduce('cnt')
     else:
         ys = None
+        cnt = None
 
     # After everything is combined, wrap it in a fancy new object, and you're
     # on your way to coolsville flats
     print("Done")
     return TData(
-        eis, x, ys, masks, ews=ews, node_map=node_map
+        eis, x, ys, masks, ews=ews, node_map=node_map, cnt=cnt
     )
  
 
@@ -139,12 +142,15 @@ def make_data_obj(eis, ys, ew_fn, ews=None, **kwargs):
 
     # Balance the edge weights if they exist
     if not isinstance(ews, None.__class__):
+        cnt = deepcopy(ews)
         ews = ew_fn(ews)
+    else:
+        cnt = None
 
 
     # Finally, return Data object
     return TData(
-        eis_t, x, ys, masks, ews=ews, node_map=nm
+        eis_t, x, ys, masks, ews=ews, cnt=cnt, node_map=nm
     )
 
 '''
