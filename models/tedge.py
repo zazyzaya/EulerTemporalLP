@@ -61,6 +61,27 @@ class TEdgeAnoms(nn.Module):
 
         return (src_score+dst_score)*0.5
 
+class GCNIdentity(nn.Module):
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, x, ei):
+        return x
+
+class SoftmaxAnoms(TEdgeAnoms):
+    '''
+    Same as above, but omit the neighborhood sampling, and just
+    use a softmax layer to generate a prob distro
+
+    NOTE: tests showed this causes precision to take a huge dive
+    tanking F1 scores, and jacking FPR up to 3-5%. I think the varience 
+    in the random neighbor sampling helps to prevent overfitting that
+    this implimentation lacks
+    '''
+    def __init__(self, embed_dim, num_nodes, n_samples):
+        super().__init__(embed_dim, num_nodes, n_samples)
+        self.H = GCNIdentity()
+
 
 '''
 Attempting strat from this paper:
