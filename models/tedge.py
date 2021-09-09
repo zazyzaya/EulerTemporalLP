@@ -19,11 +19,11 @@ class TEdgeAnoms(nn.Module):
         super().__init__()
 
         self.H = SampleMean(n_samples=n_samples)
-        self.W = nn.Sequential(
-            nn.Linear(embed_dim, num_nodes),
-            nn.Softmax(dim=1)
-        )
-
+        self.W = nn.Linear(embed_dim, num_nodes)
+        self.sm = nn.Softmax(dim=1)
+        
+        # Computes a softmax on inputs, so sm is only used 
+        # for scoring
         self.ce_loss = nn.CrossEntropyLoss()
 
     def forward(self, x, ei, no_grad=False):
@@ -53,34 +53,13 @@ class TEdgeAnoms(nn.Module):
         Scores all edges in ei given a precalculated
         H matrix (possibly made w missing edges)
         '''
-        distros = self.W(H)
+        distros = self.sm(self.W(H))
         src,dst = ei
 
         src_score = distros[src, dst]
         dst_score = distros[dst, src]
 
         return (src_score+dst_score)*0.5
-
-class GCNIdentity(nn.Module):
-    def __init__(self):
-        super().__init__()
-
-    def forward(self, x, ei):
-        return x
-
-class SoftmaxAnoms(TEdgeAnoms):
-    '''
-    Same as above, but omit the neighborhood sampling, and just
-    use a softmax layer to generate a prob distro
-
-    NOTE: tests showed this causes precision to take a huge dive
-    tanking F1 scores, and jacking FPR up to 3-5%. I think the varience 
-    in the random neighbor sampling helps to prevent overfitting that
-    this implimentation lacks
-    '''
-    def __init__(self, embed_dim, num_nodes, n_samples):
-        super().__init__(embed_dim, num_nodes, n_samples)
-        self.H = GCNIdentity()
 
 
 '''
