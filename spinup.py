@@ -3,6 +3,9 @@ import os
 import pickle
 import time
 
+from sklearn.metrics import \
+    roc_auc_score as auc_score, \
+    f1_score, average_precision_score as ap_score
 import torch 
 import torch.distributed as dist 
 import torch.distributed.rpc as rpc 
@@ -230,7 +233,7 @@ def train(rrefs, kwargs, rnn_constructor, rnn_args, impl):
     )
 
     times = []
-    best = (None, 0)
+    best = (None, float('inf'))
     no_progress = 0
     for e in range(kwargs['epochs']):
         # Get loss and send backward
@@ -255,17 +258,17 @@ def train(rrefs, kwargs, rnn_constructor, rnn_args, impl):
         model.eval()
         with torch.no_grad():
             zs = model.forward(TData.TRAIN, no_grad=True)
-            p,n = model.score_edges(zs, TData.VAL)
+            #p,n = model.score_edges(zs, TData.VAL)
             
-            auc,ap = get_score(p,n)
+            #auc,ap = get_score(p,n)
             loss = model.loss_fn(zs, TData.VAL, nratio=kwargs['nratio'])
             loss = torch.stack(loss).sum()
 
-            print("\tVal loss: %0.6f" % loss.item())
-            print("\tValidation: AP: %0.4f  AUC: %0.4f" % (ap, auc), end='')
+            print("\tVal loss: %0.6f" % loss.item(), end='')
+            #print("\tValidation: AP: %0.4f  AUC: %0.4f" % (ap, auc), end='')
 
-            tot = auc+ap
-            if tot > best[1]:
+            tot = loss.item()#auc+ap
+            if tot < best[1]:
                 print('*\n')
                 best = (model.save_states(), tot)
                 no_progress = 0
@@ -393,7 +396,7 @@ def test(model, h0, times, rrefs, manual=False, unsqueeze=False):
 
     # Scores all edges and matches them with name/timestamp
     print("Scoring")
-    scores, labels = model.score_all(zs, unsqueeze=unsqueeze)
+    scores, labels, weights = model.score_all(zs, unsqueeze=unsqueeze)
 
     # Then reset model to having all workers for future tests
     model.num_workers = len(rrefs)
@@ -425,37 +428,45 @@ def test(model, h0, times, rrefs, manual=False, unsqueeze=False):
 
         return {}
 
+    # Cat scores from timesteps together bc separation 
+    # is no longer necessary 
     scores = torch.cat(scores, dim=0)
-    # I have no idea why, but theres a few rogue labels of 4 in OpTC..
     labels = torch.cat(labels, dim=0).clamp(max=1)
-
-    anoms = scores[labels==1].sort()[0]
+    weights = torch.cat(weights, dim=0)
 
     # Classify using cutoff from earlier
     classified = torch.zeros(labels.size())
     classified[scores <= model.cutoff] = 1
 
-    #default = torch.zeros(labels.size())
-    #default[scores <= 0.5] = 1
+    # Number of alerts: if alert, then classified 1
+    # then when multiplied by weights, shows how many
+    # samples would have been classified as 1
+    alerts = classified * weights
+    tp = alerts[labels==1].sum()
+    fp = alerts[labels==0].sum()
+    
+    # Explicitly delete, as it's pretty big
+    del alerts
 
-    tpr = classified[labels==1].mean() * 100
-    fpr = classified[labels==0].mean() * 100
+    tpr = tp / weights[labels==1].sum()
+    fpr = fp / weights[labels==0].sum()
     
-    tp = classified[labels==1].sum()
-    fp = classified[labels==0].sum()
-    
-    f1 = get_f1(classified, labels)
-    auc,ap = get_score(scores[labels==0], scores[labels==1])
+    # Because a low score correlates to a 1 lable, sub from 1 to get
+    # accurate AUC/AP scores
+    scores = 1-scores
+
+    # Weight correlates to number of times that edge appears
+    # in a given snapshot. This way we score every sample 
+    # without merging edges for more accurate metrics 
+    auc = auc_score(labels, scores, sample_weight=weights)
+    ap = ap_score(labels, scores, sample_weight=weights)
+    f1 = f1_score(labels, classified, sample_weight=weights)
 
     print("Learned Cutoff %0.4f" % model.cutoff)
     print("TPR: %0.2f, FPR: %0.2f" % (tpr, fpr))
     print("TP: %d  FP: %d" % (tp, fp))
     print("F1: %0.8f" % f1)
     print("AUC: %0.4f  AP: %0.4f\n" % (auc,ap))
-
-    print("Top anom scored %0.04f" % anoms[0].item())
-    print("Lowest anom scored %0.4f" % anoms[-1].item())
-    print("Mean anomaly score: %0.4f" % anoms.mean().item())
 
     return {
         'TPR':tpr.item(), 

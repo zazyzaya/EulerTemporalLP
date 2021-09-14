@@ -107,7 +107,7 @@ def load_partial_lanl_job(pid, args):
 
 def make_data_obj(eis, ys, ew_fn, ews=None, **kwargs):
     # Known value for LANL
-    cl_cnt = 17684
+    cl_cnt = 15610
 
     # Use computer/user/special as features on top of nid
     feats = torch.zeros(cl_cnt+1, 3)
