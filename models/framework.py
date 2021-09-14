@@ -8,6 +8,20 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from .utils import _remote_method, _remote_method_async, _param_rrefs
 
 class Euler_Embed_Unit(nn.Module):
+    def __init__(self, data_load, data_kws):
+        super(Euler_Embed_Unit, self).__init__()
+
+        # Load in the data before initing params
+        # Note: passing None as the start or end data_kw skips the 
+        # actual loading part, and just pulls the x-dim 
+        print("%s loading %s-%s" % (
+            rpc.get_worker_info().name, 
+            str(data_kws['start']), 
+            str(data_kws['end']))
+        )
+
+        self.data = data_load(data_kws.pop("jobs"), **data_kws)
+
     '''
     Wrapper class to ensure calls to Embedders are formatted properly
     '''
@@ -48,7 +62,7 @@ class Euler_Encoder(DDP):
     operate on
     '''
 
-    def __init__(self, module: Euler_Embed_Unit, **kwargs):
+    def __init__(self, module: Euler_Embed_Unit, *args, **kwargs):
         '''
         Constructor for distributed encoder
 
@@ -59,7 +73,7 @@ class Euler_Encoder(DDP):
         kwargs : dict
             any args for the DDP constructor
         '''
-        super().__init__(module, **kwargs)
+        super().__init__(module, *args, **kwargs)
 
     
     def train(self, mode=True):

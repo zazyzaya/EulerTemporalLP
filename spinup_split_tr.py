@@ -225,8 +225,7 @@ def init_procs(rank, world_size, rnn_constructor, rnn_args, worker_constructor, 
 def train(rrefs, kwargs, rnn_constructor, rnn_args, impl):
     rnn = rnn_constructor(*rnn_args)
     model = StaticRecurrent(rnn, rrefs) if impl=='S' \
-        else DynamicRecurrent(rnn, rrefs) if impl=='D' \
-        else TEdgeRecurrent(rnn, rrefs)
+        else DynamicRecurrent(rnn, rrefs) 
 
     opt = DistributedOptimizer(
         Adam, model.parameter_rrefs(), lr=kwargs['lr']
@@ -239,7 +238,6 @@ def train(rrefs, kwargs, rnn_constructor, rnn_args, impl):
         # Get loss and send backward
         model.train()
         with dist_autograd.context() as context_id:
-            print("forward")
             st = time.time()
             zs = model.forward(TData.TRAIN)
             loss = model.loss_fn(zs, TData.TRAIN, nratio=kwargs['nratio'])
@@ -294,6 +292,11 @@ def train(rrefs, kwargs, rnn_constructor, rnn_args, impl):
     print("Avg TPE: %0.4fs" % tpe)
     
     return model, h0, tpe
+
+
+def train_detector(rrefs, impl, leader_kwargs):
+    model = StaticDetector(rrefs, **leader_kwargs) if impl == 'S'\
+        else DynamicDetector(rrefs, **leader_kwargs)
 
 
 '''

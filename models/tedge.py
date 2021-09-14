@@ -45,7 +45,7 @@ class TEdgeAnoms(nn.Module):
                 dst 
             )
         else:
-            return H, None
+            return H, torch.zeros((1))
 
 
     def score(self, H, ei):
@@ -98,9 +98,7 @@ class TEdgeEncoder(Euler_Encoder):
             ei = self.module.data.ei_masked(partition, i)
             h, loss = self.module.anom_detector(zs[i], ei, no_grad=no_grad)
             H.append(h)
-
-            if not loss is None:
-                tot_loss += loss
+            tot_loss += loss
 
         return torch.stack(H), tot_loss.true_divide(len(H))
 

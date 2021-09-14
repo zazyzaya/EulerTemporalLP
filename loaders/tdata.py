@@ -20,7 +20,7 @@ class TData(Data):
         self.T = len(eis)
         self.xs = xs 
         self.masks = masks 
-        self.dynamic_feats = isinstance(xs, list)
+        self.dynamic_feats = isinstance(xs, list) or (isinstance(xs, torch.Tensor) and xs.dim() == 3)
         self.ews = ews 
         self.ys = ys 
         self.is_test = not isinstance(ys, None.__class__)
@@ -64,6 +64,22 @@ class TData(Data):
 
         return self.ews[t][self.masks[t]] if enum == self.TRAIN \
             else self.ews[t][~self.masks[t]]
+
+
+    def set_x(self, xs):
+        if isinstance(xs, list) or (isinstance(xs, torch.Tensor) and xs.dim() == 3):
+            assert len(xs) == self.T, \
+                "Size mismatch. Given %d feature matrices, but hold %d snapshots" \
+                % (len(xs), self.T)
+            
+            self.dynamic_feats = True 
+            self.xs = xs 
+            self.x_dim = xs[0].size(1)
+        
+        else:
+            self.xs = xs 
+            self.dynamic_feats = False 
+            self.x_dim = xs.size(1)
 
     
     def get_negative_edges(self, enum, nratio=1, start=0):

@@ -9,6 +9,7 @@ from .framework import Euler_Embed_Unit
 from .static import StaticEncoder
 from .dynamic import DynamicEncoder
 
+
 class GCN(Euler_Embed_Unit):
     '''
     2-layer GCN implimenting the Euler Embed Unit interface
@@ -34,18 +35,8 @@ class GCN(Euler_Embed_Unit):
         data : loaders.TGraph 
             A TGraph object holding data for all snapshots loaded into this model 
         '''
-        super(GCN, self).__init__()
-
-        # Load in the data before initing params
-        # Note: passing None as the start or end data_kw skips the 
-        # actual loading part, and just pulls the x-dim 
-        print("%s loading %s-%s" % (
-            rpc.get_worker_info().name, 
-            str(data_kws['start']), 
-            str(data_kws['end']))
-        )
-
-        self.data = data_load(data_kws.pop("jobs"), **data_kws)
+        # Data is loaded in parent class
+        super(GCN, self).__init__(data_load, data_kws)
 
         # Params 
         self.c1 = GCNConv(self.data.x_dim, h_dim, add_self_loops=True)
