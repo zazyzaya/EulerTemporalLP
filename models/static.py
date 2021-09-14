@@ -31,17 +31,15 @@ class StaticEncoder(Euler_Encoder):
 
         preds = []
         ys = []
+        cnts = []
         for i in range(self.module.data.T):
             preds.append(
                 self.decode(self.module.data.eis[i], zs[i])
-            )
-            if not unsqueeze:
-                ys.append(self.module.data.ys[i])
+            )    
+            ys.append(self.module.data.ys[i])
+            cnts.append(self.module.data.cnt[i])
 
-        if unsqueeze:
-            return self.decompress_scores(preds)
-
-        return preds, ys
+        return preds, ys, cnts
 
     def score_edges(self, z, partition, nratio):
         '''
@@ -139,13 +137,14 @@ class StaticRecurrent(Euler_Recurrent):
             start = end 
 
         obj = [f.wait() for f in futs]
-        scores, ys = zip(*obj)
+        scores, ys, cnts = zip(*obj)
         
         # Compress into single list of snapshots
         scores = sum(scores, [])
         ys = sum(ys, [])
+        cnts = sum(cnts, [])
 
-        return scores, ys
+        return scores, ys, cnts
 
 
     def loss_fn(self, zs, partition, nratio=1):

@@ -91,23 +91,6 @@ class Euler_Encoder(DDP):
         '''
         return self.module.data.__getattribute__(field)
 
-
-    def decompress_scores(self, scores):
-        '''
-        Repeats scores as many times as that edge appears for better
-        validation/testing. Otherwise edges that occur multiple times in
-        a single timestep are compressed into a single weighted edge, and 
-        multiple instances of the same sample are not evaluated accurately
-        '''
-        r_scores = []
-        r_ys = []
-        for i in range(self.module.data.T):
-            counts = self.module.data.cnt[i]
-            r_scores.append(torch.repeat_interleave(scores[i], counts, dim=0))
-            r_ys.append(torch.repeat_interleave(self.module.data.ys[i], counts, dim=0))
-
-        return r_scores, r_ys
-
     
     def run_arbitrary_fn(self, fn, *args, **kwargs):
         '''

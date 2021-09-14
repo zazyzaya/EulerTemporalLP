@@ -46,18 +46,16 @@ class DynamicEncoder(Euler_Encoder):
             it is safe to assume z[n] are the embeddings for nodes in the 
             snapshot held by this model's TGraph at timestep n
         '''
-        preds,ys = [], []
+        preds,ys,cnts = [], [], []
         for i in range(self.module.data.T-self.is_head):
             preds.append(
                 self.decode(self.module.data.eis[i+self.is_head], zs[i+self.is_head])
             )
-            if not unsqueeze:
-                ys.append(self.module.data.ys[i])
 
-        if unsqueeze:
-            return self.decompress_scores(preds)
+            ys.append(self.module.data.ys[i])
+            cnts.append(self.module.data.cnt[i])
 
-        return preds, ys
+        return preds, ys, cnts
 
     
     def score_edges(self, z, partition, nratio):
@@ -88,7 +86,7 @@ class DynamicEncoder(Euler_Encoder):
         # Z_0 is aligned with E_1 to be used for prediction
         for i in range(self.is_head, len(z)):
             p = self.module.data.ei_masked(partition, i)
-            if p.size(0) == 0:
+            if p.size(1) == 0:
                 continue
 
             p_scores.append(self.decode(p, z[i]))
@@ -181,13 +179,14 @@ class DynamicRecurrent(Euler_Recurrent):
             start = end 
 
         obj = [f.wait() for f in futs]
-        scores, ys = zip(*obj)
+        scores, ys, cnts = zip(*obj)
         
         # Compress into single list of snapshots
         scores = sum(scores, [])
         ys = sum(ys, [])
-        return scores, ys
+        cnts = sum(cnts, [])
 
+        return scores, ys, cnts
 
 
     def loss_fn(self, zs, partition, nratio=1):

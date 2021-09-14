@@ -101,7 +101,8 @@ def get_args():
     ap.add_argument(
         '--impl', '-i',
         type=str.upper,
-        choices=['S', 'STATIC', 'D', 'DYNAMIC', 'T', 'TEDGE']
+        choices=['S', 'STATIC', 'D', 'DYNAMIC', 'T', 'TEDGE'],
+        default="STATIC"
     )
 
     ap.add_argument(

@@ -70,3 +70,11 @@ def get_optimal_cutoff(pscore, nscore, fw=0.5):
     print("Optimal cutoff %0.4f achieves TPR: %0.2f FPR: %0.2f on train data" 
         % (th[best], tpr[best], fpr[best]))
     return th[best]
+
+def dist_AUC(fname):
+	'''
+	Calcuates AUC score for a CSV of scores,label
+	for datasets like LANL which are way to big to 
+	hold in memory all at once
+	'''
+	pass	

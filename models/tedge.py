@@ -52,14 +52,18 @@ class TEdgeAnoms(nn.Module):
         '''
         Scores all edges in ei given a precalculated
         H matrix (possibly made w missing edges)
+
+        Only called in eval so never need grads
         '''
-        distros = self.sm(self.W(H))
-        src,dst = ei
+        with torch.no_grad():
+            distros = self.sm(self.W(H))
+            src,dst = ei
 
-        src_score = distros[src, dst]
-        dst_score = distros[dst, src]
+            src_score = distros[src, dst]
+            dst_score = distros[dst, src]
 
-        return (src_score+dst_score)*0.5
+            return (src_score+dst_score)*0.5
+
 
 
 '''
@@ -86,13 +90,13 @@ def tedge_rref(loader, kwargs, h_dim, z_dim, **kws):
     )
 
 class TEdgeEncoder(Euler_Encoder):
-    def detect_anoms(self, zs, partition):
+    def detect_anoms(self, zs, partition, no_grad):
         H = []
         tot_loss = torch.zeros((1))
         
         for i in range(self.module.data.T):
             ei = self.module.data.ei_masked(partition, i)
-            h, loss = self.module.anom_detector(zs[i], ei)
+            h, loss = self.module.anom_detector(zs[i], ei, no_grad=no_grad)
             H.append(h)
 
             if not loss is None:
@@ -139,18 +143,16 @@ class TEdgeEncoder(Euler_Encoder):
             "%s was given more embeddings than it has time slices"\
             % rpc.get_worker_info().name
 
-        preds, ys = [], []
+        preds, ys, cnts = [], [], []
         for i in range(self.module.data.T):
             preds.append(
                 self.module.score(H[i], self.module.data.eis[i])
             )
-            if not unsqueeze:
-                ys.append(self.module.data.ys[i])
 
-        if unsqueeze:
-            return self.decompress_scores(preds)
+            ys.append(self.module.data.ys[i])
+            cnts.append(self.module.data.cnt[i])
 
-        return preds, ys
+        return preds, ys, cnts
 
     def calc_loss(self, z, partition, nratio):
         '''
@@ -205,7 +207,8 @@ class TEdgeRecurrent(Euler_Recurrent):
                     TEdgeEncoder.detect_anoms,
                     self.gcns[i],
                     Variable(z[start : end]), 
-                    mask_enum
+                    mask_enum,
+                    no_grad
                 )
             )
             start = end 
@@ -245,13 +248,14 @@ class TEdgeRecurrent(Euler_Recurrent):
         for i in range(self.num_workers) ]
 
         obj = [f.wait() for f in futs]
-        scores, ys = zip(*obj)
+        scores, ys, cnts = zip(*obj)
         
         # Compress into single list of snapshots
         scores = sum(scores, [])
         ys = sum(ys, [])
+        cnts = sum(cnts, [])
 
-        return scores, ys
+        return scores, ys, cnts
 
 
     def loss_fn(self, zs, partition, nratio=1):
