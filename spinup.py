@@ -239,6 +239,7 @@ def train(rrefs, kwargs, rnn_constructor, rnn_args, impl):
         # Get loss and send backward
         model.train()
         with dist_autograd.context() as context_id:
+            print("forward")
             st = time.time()
             zs = model.forward(TData.TRAIN)
             loss = model.loss_fn(zs, TData.TRAIN, nratio=kwargs['nratio'])
@@ -444,6 +445,18 @@ def test(model, h0, times, rrefs, manual=False, unsqueeze=False):
     alerts = classified * weights
     tp = alerts[labels==1].sum()
     fp = alerts[labels==0].sum()
+
+    # For comparison get unweighted, as I'm curious
+    # if weighting improves or decreases the effectiveness
+    p_uw = classified[labels==1]
+    tpr_uw = p_uw.mean()
+    tp_uw = p_uw.sum()
+    del p_uw
+
+    f_uw = classified[labels==0]
+    fp_uw = f_uw.sum()
+    fpr_uw = f_uw.mean()
+    del f_uw 
     
     # Explicitly delete, as it's pretty big
     del alerts
@@ -459,8 +472,13 @@ def test(model, h0, times, rrefs, manual=False, unsqueeze=False):
     # in a given snapshot. This way we score every sample 
     # without merging edges for more accurate metrics 
     auc = auc_score(labels, scores, sample_weight=weights)
+    auc_uw = auc_score(labels, scores)
+
     ap = ap_score(labels, scores, sample_weight=weights)
+    ap_uw = ap_score(labels, scores)
+
     f1 = f1_score(labels, classified, sample_weight=weights)
+    f1_uw = f1_score(labels, classified)
 
     print("Learned Cutoff %0.4f" % model.cutoff)
     print("TPR: %0.2f, FPR: %0.2f" % (tpr, fpr))
@@ -473,9 +491,16 @@ def test(model, h0, times, rrefs, manual=False, unsqueeze=False):
         'FPR':fpr.item(), 
         'TP':tp.item(), 
         'FP':fp.item(), 
-        'F1':f1.item(), 
+        'F1':f1, 
         'AUC':auc, 
         'AP': ap,
+        'UW_TPR': tpr_uw.item(),
+        'UW_FPR': fpr_uw.item(),
+        'UW_TP': tp_uw.item(), 
+        'UW_FP': fp_uw.item(),
+        'UW_F1': f1_uw, 
+        'UW_AUC': auc_uw,
+        'UW_AP': ap_uw,
         'FwdTime':ctime
     }
 

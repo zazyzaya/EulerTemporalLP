@@ -36,7 +36,7 @@ def get_args():
 
     ap.add_argument(
         '-w', '--workers',
-        type=int, default=4
+        type=int, default=8
     )
 
     ap.add_argument(

@@ -12,8 +12,7 @@ from .load_utils import edge_tv_split, std_edge_w, standardized
 
 DATE_OF_EVIL_LANL = 150885
 FILE_DELTA = 10000
-LANL_FOLDER = '/mnt/raid0_24TB/isaiah/code/TGCN/src/data/split_LANL/'
-RED_LOG = '/mnt/raid0_24TB/datasets/LANL_2015/data_files/redteam.txt'
+LANL_FOLDER = '/mnt/raid0_24TB/isaiah/data/LANL/split/'
 
 COMP = 0
 USR = 1
@@ -106,27 +105,13 @@ def load_partial_lanl_job(pid, args):
 
 
 def make_data_obj(eis, ys, ew_fn, ews=None, **kwargs):
-    # Known value for LANL
-    cl_cnt = 15610
-
-    # Use computer/user/special as features on top of nid
-    feats = torch.zeros(cl_cnt+1, 3)
-
     if 'node_map' in kwargs:
         nm = kwargs['node_map']
     else:
         nm = pickle.load(open(LANL_FOLDER+'nmap.pkl', 'rb'))
 
-    for i in range(len(nm)):
-        if nm[i][0] == 'C':
-            feats[i][COMP] = 1
-        elif nm[i][0] == 'U':
-            feats[i][USR] = 1
-        else:
-            feats[i][SPEC] = 1
-
-    # That's not much info, so add in NIDs as well
-    x = torch.cat([torch.eye(cl_cnt+1), feats], dim=1)
+    cl_cnt = len(nm)
+    x = torch.eye(cl_cnt+1)
     
     # Build time-partitioned edge lists
     eis_t = []
@@ -146,7 +131,6 @@ def make_data_obj(eis, ys, ew_fn, ews=None, **kwargs):
         ews = ew_fn(ews)
     else:
         cnt = None
-
 
     # Finally, return Data object
     return TData(
@@ -171,15 +155,7 @@ def load_partial_lanl(start=140000, end=156659, delta=8640, is_test=False, ew_fn
     node_map = pickle.load(open(LANL_FOLDER+'nmap.pkl', 'rb'))
 
     # Helper functions (trims the trailing \n)
-    fmt_line = lambda x : (int(x[0]), int(x[1]), int(x[2][:-1]))
-    def get_next_anom(rf):
-        line = rf.readline().split(',')
-        
-        # Check we haven't reached EOF
-        if len(line) > 1:
-            return (int(line[0]), line[2], line[3])
-        else:
-            return float('inf'), float('inf'), float('inf')
+    fmt_line = lambda x : (int(x[0]), int(x[1]), int(x[2]), int(x[3][:-1]))
 
     # For now, just keeps one copy of each edge. Could be
     # modified in the future to add edge weight or something
@@ -190,24 +166,6 @@ def load_partial_lanl(start=140000, end=156659, delta=8640, is_test=False, ew_fn
             edges_t[et] = (max(is_anom, val[0]), val[1]+1)
         else:
             edges_t[et] = (is_anom, 1)
-
-    def is_anomalous(src, dst, anom):
-        src = node_map[src]
-        dst = node_map[dst]
-        return src==anom[1] and dst==anom[2][:-1]
-
-    # If we're testing for anomalous edges, get the first anom that
-    # will appear in this range (usually just the first one, but allows
-    # for checking late time steps as well)
-    if is_test:
-        rf = open(RED_LOG, 'r')
-        rf.readline() # Skip header
-        
-        next_anom = get_next_anom(rf)
-        while next_anom[0] < start:
-            next_anom = get_next_anom(rf)
-    else:
-        next_anom = (-1, 0,0)
 
 
     scan_prog = tqdm(desc='Finding start', total=start-cur_slice-1)
@@ -233,7 +191,7 @@ def load_partial_lanl(start=140000, end=156659, delta=8640, is_test=False, ew_fn
                 curtime = ts 
                 continue
             
-            ts, src, dst = fmt_line(l)
+            ts, src, dst, label = fmt_line(l)
             et = (src,dst)
 
             # Not totally necessary but I like the loading bar
@@ -268,19 +226,7 @@ def load_partial_lanl(start=140000, end=156659, delta=8640, is_test=False, ew_fn
                 line = in_f.readline()
                 continue
 
-            # Mark edge as anomalous if it is 
-            if ts == next_anom[0] and is_anomalous(src, dst, next_anom):
-                add_edge(et, is_anom=1)
-                next_anom = get_next_anom(rf)
-
-                # Mark the first timestep with anomalies as test set start
-                if not anom_marked:
-                    anom_marked = True
-                    anom_starts = len(edges)
-
-            else:
-                add_edge(et)
-
+            add_edge(et, is_anom=label)
             line = in_f.readline()
 
         in_f.close() 
@@ -292,9 +238,6 @@ def load_partial_lanl(start=140000, end=156659, delta=8640, is_test=False, ew_fn
         else:
             keep_reading=False
             break
-    
-    if is_test:
-        rf.close() 
 
     ys = ys if is_test else None
 
