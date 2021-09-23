@@ -18,10 +18,9 @@ from loaders.tdata import TData
 from models.static import StaticEncoder, StaticRecurrent 
 from models.dynamic import DynamicEncoder, DynamicRecurrent
 from models.tedge import TEdgeEncoder, TEdgeRecurrent
+from models.tedge_dyn import TEdgeEncoderDynamic, TEdgeRecurrentDynamic
 from models.utils import _remote_method_async, _remote_method
-from models.embedders import static_gcn_rref
-from models.recurrent import GRU 
-from utils import get_score, get_optimal_cutoff, get_f1
+from utils import get_score, get_optimal_cutoff
 
 DEFAULT_TR = {
     'lr': 0.01,
@@ -158,9 +157,10 @@ def init_procs(rank, world_size, rnn_constructor, rnn_args, worker_constructor, 
             )
 
             rnn = rnn_constructor(*rnn_args)
-            model = StaticRecurrent(rnn, rrefs) if impl=='S'\
-                else DynamicRecurrent(rnn, rrefs) if impl=='D'\
-                else TEdgeRecurrent(rnn, rrefs)
+            model = StaticRecurrent(rnn, rrefs) if impl=='STATIC'\
+                else DynamicRecurrent(rnn, rrefs) if impl=='DYNAMIC'\
+                else TEdgeRecurrent(rnn, rrefs) if impl=='TEDGE'\
+                else TEdgeRecurrentDynamic(rnn, rrefs)
 
             states = pickle.load(open('model_save.pkl', 'rb'))
             model.load_states(states['gcn'], states['rnn'])
@@ -224,9 +224,10 @@ def init_procs(rank, world_size, rnn_constructor, rnn_args, worker_constructor, 
 
 def train(rrefs, kwargs, rnn_constructor, rnn_args, impl):
     rnn = rnn_constructor(*rnn_args)
-    model = StaticRecurrent(rnn, rrefs) if impl=='S' \
-        else DynamicRecurrent(rnn, rrefs) if impl=='D' \
-        else TEdgeRecurrent(rnn, rrefs)
+    model = StaticRecurrent(rnn, rrefs) if impl=='STATIC' \
+        else DynamicRecurrent(rnn, rrefs) if impl=='DYNAMIC' \
+        else TEdgeRecurrent(rnn, rrefs) if impl=='TEDGE' \
+        else TEdgeRecurrentDynamic(rnn, rrefs)
 
     opt = DistributedOptimizer(
         Adam, model.parameter_rrefs(), lr=kwargs['lr']
@@ -305,7 +306,8 @@ def get_cutoff(model, h0, times, kwargs, lambda_param):
     # whatever. This is a hacky solution, but it works
     Encoder = StaticEncoder if isinstance(model, StaticRecurrent) \
         else DynamicEncoder if isinstance(model, DynamicRecurrent) \
-        else TEdgeEncoder
+        else TEdgeEncoder if isinstance(model, TEdgeRecurrent) \
+        else TEdgeEncoderDynamic
 
     # First load validation data onto one of the GCNs
     _remote_method(
@@ -354,7 +356,8 @@ def test(model, h0, times, rrefs, manual=False, unsqueeze=False):
     # using OOP at all IMO, but whatever
     Encoder = StaticEncoder if isinstance(model, StaticRecurrent) \
         else DynamicEncoder if isinstance(model, DynamicRecurrent) \
-        else TEdgeEncoder
+        else TEdgeEncoder if isinstance(model, TEdgeRecurrent) \
+        else TEdgeEncoderDynamic
 
     # Load train data into workers
     ld_args = get_work_units(
@@ -528,9 +531,8 @@ def run_all(workers, rnn_constructor, rnn_args, worker_constructor,
         lambda_param : float
             How much weight to give low FPR when deciding a cutoff;
             defaults to 0.6
-        impl : char in ['S', 'D', 'U']
-            Class implimenting Framework classes; as of right now, 
-            only (S)tatic, (D)ynamic, and (U)nified
+        impl : str in ['STATIC', 'DYNAMIC', 'TEDGE', 'DYNTEDGE']
+            Class implimenting Framework classes
         load_fn : callable -> TGraph
             Function to load a set of snapshots into workers
         tr_start : int
@@ -593,7 +595,7 @@ def run_all(workers, rnn_constructor, rnn_args, worker_constructor,
 
     # Retrieve stats, and cleanup temp file
     stats = pickle.load(open(TMP_FILE, 'rb'))
-    os.remove(TMP_FILE)
+    #os.remove(TMP_FILE)
 
     print(stats)
     return stats

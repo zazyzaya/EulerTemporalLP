@@ -47,9 +47,12 @@ class DynamicEncoder(Euler_Encoder):
             snapshot held by this model's TGraph at timestep n
         '''
         preds,ys,cnts = [], [], []
-        for i in range(self.module.data.T-self.is_head):
+        for i in range(self.is_head, self.module.data.T):
             preds.append(
-                self.decode(self.module.data.eis[i+self.is_head], zs[i+self.is_head])
+                self.decode(
+                    self.module.data.eis[i], 
+                    zs[i]
+                )
             )
 
             ys.append(self.module.data.ys[i])

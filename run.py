@@ -11,6 +11,7 @@ from models.embedders import \
     dynamic_gcn_rref, dynamic_gat_rref, dynamic_sage_rref 
 
 from models.tedge import tedge_rref
+from models.tedge_dyn import dyn_tedge_rref
 from spinup import run_all
 
 DEFAULT_TR = {
@@ -101,7 +102,7 @@ def get_args():
     ap.add_argument(
         '--impl', '-i',
         type=str.upper,
-        choices=['S', 'STATIC', 'D', 'DYNAMIC', 'T', 'TEDGE'],
+        choices=['STATIC', 'DYNAMIC', 'T', 'TEDGE', 'DYNTEDGE'],
         default="STATIC"
     )
 
@@ -124,8 +125,6 @@ def get_args():
     readable = str(args)
     print(readable)
 
-    impl = args.impl[0]
-    args.static = impl
     DEFAULT_TR['decompress'] = args.compressed
     
     # Parse dataset info 
@@ -164,17 +163,20 @@ def get_args():
 
     # Convert from str to function pointer
     if args.encoder == 'GCN':
-        args.encoder = static_gcn_rref if impl == 'S' \
+        args.encoder = static_gcn_rref if args.impl == 'STATIC' \
             else dynamic_gcn_rref
     elif args.encoder == 'GAT':
-        args.encoder = static_gat_rref if impl == 'S' \
+        args.encoder = static_gat_rref if args.impl == 'STATIC' \
             else dynamic_gat_rref
     else:
-        args.encoder = static_sage_rref if impl == 'S' \
+        args.encoder = static_sage_rref if args.impl == 'STATIC' \
             else dynamic_sage_rref
 
-    if impl == 'T':
+    if args.impl == 'TEDGE':
         args.encoder = tedge_rref
+
+    if args.impl == 'DYNTEDGE':
+        args.encoder = dyn_tedge_rref
 
     if args.rnn == 'GRU':
         args.rnn = GRU
@@ -208,7 +210,7 @@ if __name__ == '__main__':
             args.delta,
             args.load,
             args.fpweight,
-            args.static,
+            args.impl,
             args.loader, 
             args.tr_start,
             args.tr_end, 
