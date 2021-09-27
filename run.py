@@ -18,7 +18,7 @@ DEFAULT_TR = {
     'lr': 0.01,
     'epochs': 500,
     'min': 1,
-    'patience': 10,
+    'patience': 5,
     'nratio': 10,
     'val_nratio': 1,
     'decompress': True
