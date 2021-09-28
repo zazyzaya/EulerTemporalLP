@@ -9,8 +9,9 @@ from torch_geometric.nn import MessagePassing
 from zayas_graph_modules.samplers import SampleMean
 
 from .embedders import GCN 
-from .framework import Euler_Encoder, Euler_Recurrent
-from .utils import _remote_method, _remote_method_async, _param_rrefs
+from .framework import Euler_Encoder
+from .static import StaticEncoder, StaticRecurrent
+from .utils import _remote_method, _remote_method_async, _decoder_rrefs
 
 
 # From Ramesh's paper, this is f(u,v,N(u))
@@ -36,22 +37,16 @@ class TEdgeAnoms(nn.Module):
         H = self.H(x,ei)
         distro = self.W(H)
 
-        # Don't really need to return the full W matrix
-        # Instead calculate loss on samples of true positives
-        if self.training:
-            src, dst = ei 
-            return H, self.ce_loss(
-                distro[src],
-                dst 
-            )
-        else:
-            return H, None
-
+        src, dst = ei 
+        return self.ce_loss(
+            distro[src],
+            dst 
+        ), H
 
     def score(self, H, ei):
         '''
         Scores all edges in ei given a precalculated
-        H matrix (possibly made w missing edges)
+        zs matrix of static (possibly made w missing edges)
 
         Only called in eval so never need grads
         '''
@@ -64,66 +59,63 @@ class TEdgeAnoms(nn.Module):
 
             return (src_score+dst_score)*0.5
 
-
-
-'''
-Attempting strat from this paper:
-Unified Graph Embedding-based Anomalous Edge Detection
-https://ieeexplore.ieee.org/document/9206720
-'''
-
-class TEdgeConv(GCN):
-    def __init__(self, data_load, data_kws, h_dim, z_dim, n_samples=5):
-        super().__init__(data_load, data_kws, h_dim, z_dim)
-        
-        # This is a hacky solution. TODO figure out how to tell edge conv number of 
-        # output dimensions from GRU
-        self.anom_detector = TEdgeAnoms(z_dim//2, self.data.num_nodes, n_samples)
-
-    def score(self, H, ei):
-        return self.anom_detector.score(H, ei)
-
-
 def tedge_rref(loader, kwargs, h_dim, z_dim, **kws):
     return TEdgeEncoder(
-        TEdgeConv(loader, kwargs, h_dim, z_dim)
+        GCN(loader, kwargs, h_dim, z_dim),
+        TEdgeAnoms, z_dim 
     )
 
-class TEdgeEncoder(Euler_Encoder):
-    def detect_anoms(self, zs, partition, no_grad):
-        H = []
-        tot_loss = torch.zeros((1))
+class TEdgeDecoder(DDP):
+    '''
+    Extended DDP for TEdgeAnom
+    '''
+    def score(self, H, ei):
+        return self.module.score(H, ei)
+
+class TEdgeEncoder(StaticEncoder):
+    def __init__(self, encoder, decoder_constructor, z_dim, **kwargs):
+        super().__init__(encoder, **kwargs)
         
-        for i in range(self.module.data.T):
-            ei = self.module.data.ei_masked(partition, i)
-            h, loss = self.module.anom_detector(zs[i], ei, no_grad=no_grad)
-            H.append(h)
+        # Cleaner naming convention
+        self.encoder = self.module      
 
-            if not loss is None:
-                tot_loss += loss
+        # Need to wrap in a DDP to coordinate params again. Luckilly this time it's pretty
+        # simple to do. We just have to add one additional method to the baseline DDP class
+        self.decoder = TEdgeDecoder(
+            decoder_constructor(
+                z_dim//2, 
+                self.module.data.num_nodes, 
+                5
+            )
+        )
 
-        return torch.stack(H), tot_loss.true_divide(len(H))
+    def parameters(self, recurse: bool = True):
+        '''
+        Exclude decoder params as those are trained seperately
+        '''
+        return self.encoder.parameters(recurse=recurse)
 
-    def score_edges(self, H, partition, nratio):
-        n = self.module.data.get_negative_edges(partition, nratio)
+    def decoder_parameters(self, recurse: bool=True):
+        '''
+        Exclude encoder params
+        ''' 
+        return self.decoder.parameters(recurse=recurse)
 
-        p_scores = []
-        n_scores = []
+    def anom_forward(self, zs, partition, no_grad):
+        loss = torch.zeros((1))
+        hs = []
+        
+        for i in range(self.encoder.data.T):
+            ei = self.encoder.data.ei_masked(partition, i)
+            if ei.size(1):
+                l, h = self.decoder(zs[i], ei, no_grad=no_grad)
+            
+                loss += l
+                hs.append(h)
 
-        for i in range(self.module.data.T):
-            p = self.module.data.ei_masked(partition, i)
-            if p.size(1) == 0:
-                continue
+        return loss.true_divide(len(zs)), torch.stack(hs)
 
-            p_scores.append(self.module.score(H[i], p))
-            n_scores.append(self.module.score(H[i], n[i]))
-
-        p_scores = torch.cat(p_scores, dim=0)
-        n_scores = torch.cat(n_scores, dim=0)
-
-        return p_scores, n_scores
-
-    def decode_all(self, H, unsqueeze=False):
+    def decode_all(self, zs, unsqueeze=True):
         '''
         Given node embeddings, return edge likelihoods for 
         all subgraphs held by this model
@@ -135,30 +127,30 @@ class TEdgeEncoder(Euler_Encoder):
             it is safe to assume z[n] are the embeddings for nodes in the 
             snapshot held by this model's TGraph at timestep n
         '''
-        assert not H.size(0) < self.module.data.T, \
+        assert not zs.size(0) < self.encoder.data.T, \
             "%s was given fewer embeddings than it has time slices"\
             % rpc.get_worker_info().name
 
-        assert not H.size(0) > self.module.data.T, \
+        assert not zs.size(0) > self.encoder.data.T, \
             "%s was given more embeddings than it has time slices"\
             % rpc.get_worker_info().name
 
-        preds, ys, cnts = [], [], []
-        for i in range(self.module.data.T):
+        preds = []
+        ys = []
+        cnts = []
+        for i in range(self.encoder.data.T):
             preds.append(
-                self.module.score(H[i], self.module.data.eis[i])
-            )
-
-            ys.append(self.module.data.ys[i])
-            cnts.append(self.module.data.cnt[i])
+                self.decoder.score(zs[i], self.encoder.data.eis[i])
+            )    
+            ys.append(self.encoder.data.ys[i])
+            cnts.append(self.encoder.data.cnt[i])
 
         return preds, ys, cnts
 
-    def calc_loss(self, z, partition, nratio):
+    def score_edges(self, z, partition, nratio, zscores=False):
         '''
-        Sum up all of the loss per time step, then average it. For some reason
-        this works better than running score edges on everything at once. It's better
-        to run BCE per time step rather than all at once
+        Given a set of Z embeddings, returns likelihood scores for all known
+        edges, and randomly sampled negative edges
 
         z : torch.Tensor
             A T x d x N tensor of node embeddings generated by the models, 
@@ -170,82 +162,85 @@ class TEdgeEncoder(Euler_Encoder):
         nratio : float
             The model samples nratio * |E| negative edges for calculating loss
         '''
-        tot_loss = torch.zeros(1)
-        ns = self.module.data.get_negative_edges(partition, nratio)
+        if zscores:
+            return super().score_edges(z, partition, nratio)
+
+        n = self.encoder.data.get_negative_edges(partition, nratio)
+
+        p_scores = []
+        n_scores = []
 
         for i in range(len(z)):
-            ps = self.module.data.ei_masked(partition, i)
-            
-            # Edge case. Prevents nan errors when not enough edges
-            # only happens with very small timewindows 
-            if ps.size(1) == 0:
+            p = self.encoder.data.ei_masked(partition, i)
+            if p.size(1) == 0:
                 continue
 
-            tot_loss += self.bce(
-                self.decode(ps, z[i]),
-                self.decode(ns[i], z[i])
-            )
+            p_scores.append(self.decoder.score(z[i], p))
+            n_scores.append(self.decoder.score(z[i], n[i]))
 
-        return tot_loss.true_divide(len(z))
+        p_scores = torch.cat(p_scores, dim=0)
+        n_scores = torch.cat(n_scores, dim=0)
+
+        return p_scores, n_scores
 
 
-class TEdgeRecurrent(Euler_Recurrent):
-    def forward(self, mask_enum, include_h=False, h0=None, no_grad=False):
-        if include_h:
-            z, h = super().forward(mask_enum, include_h=include_h, h0=h0, no_grad=no_grad)
-        else:
-            z = super().forward(mask_enum, include_h=include_h, h0=h0, no_grad=no_grad)
+class TEdgeRecurrent(StaticRecurrent):
+    def __init__(self, rnn: nn.Module, remote_rrefs: list):
+        super().__init__(rnn, remote_rrefs)
+        self.decoding = False 
 
+    def anom_forward(self, mask_enum, zs, no_grad=False):
         # Train the anomaly detector on the output of the embedder at the same time 
         # note the Variable though; loss here won't backprop into the GNN/RNN
+        self.decoding = True
+        
         futs = []
         start = 0
+
+        # Called the first time to get Z stored on the workers
+        zs = Variable(zs)
         for i in range(self.num_workers):
             end = start + self.len_from_each[i]
             futs.append(
                 _remote_method_async(
-                    TEdgeEncoder.detect_anoms,
+                    TEdgeEncoder.anom_forward,
                     self.gcns[i],
-                    Variable(z[start : end]), 
+                    zs[start : end],
                     mask_enum,
                     no_grad
                 )
             )
             start = end 
 
-        H, loss = [], torch.zeros(1)
-        for f in futs:
-            obj = f.wait()
-            H.append(obj[0])
-            loss += obj[1]
+        # Workers just run loss and return it
+        loss, hs = zip(*[f.wait() for f in futs])
         
-        self.H = H 
-        self.anom_loss = loss 
+        self.H = hs
+        return loss 
 
-        if include_h:
-            return z, h 
-        else: 
-            return z
-
-    def score_all(self, *args, unsqueeze=False):
+    def score_all(self, zs, zscores=False):
         '''
         Has the distributed models score and label all of their edges
         Sends workers embeddings such that H[n] is used to reconstruct graph at 
         snapshot n
 
-        H : torch.Tensor 
-            A T x d x N tensor of node embeddings generated by each graph snapshot
-            Need to offset according to how far in the future embeddings are supposed
-            to represent.
+        zs : torch.Tensor 
+            |T| x |N| x d tensor of embeddings generated by Euler model 
+            Not assumed to be on workers already as this method is only ever called
+            during evaluation.
         '''
+        if zscores:
+            # Uses StaticEncoder.score_all method (i.e. just uses inner product)
+            return super().score_all(zs)
+
         futs = [
             _remote_method_async(
                 TEdgeEncoder.decode_all,
                 self.gcns[i],
-                self.H[i],
-                unsqueeze=unsqueeze
+                self.H[i]
             )
-        for i in range(self.num_workers) ]
+            for i in range(self.num_workers)
+        ]
 
         obj = [f.wait() for f in futs]
         scores, ys, cnts = zip(*obj)
@@ -255,72 +250,46 @@ class TEdgeRecurrent(Euler_Recurrent):
         ys = sum(ys, [])
         cnts = sum(cnts, [])
 
-        return scores, ys, cnts
+        return scores, ys, cnts        
 
+    def score_edges(self, zs, partition, nratio=1, zscore=False):
+        if (not self.decoding) or zscore:
+            return super().score_edges(zs, partition, nratio)
 
-    def loss_fn(self, zs, partition, nratio=1):
-        '''
-        Runs NLL on each worker machine given the generated embeds
-        Sends workers embeddings such that zs[n] is used to reconstruct graph at 
-        snapshot n
-
-        zs : torch.Tensor 
-            A T x d x N tensor of node embeddings generated by each graph snapshot
-            Need to offset according to how far in the future embeddings are supposed
-            to represent.
-        partition : int
-            enum representing train, validation, test sent to workers
-        nratio : float
-            The workers sample nratio * |E| negative edges for calculating loss
-        '''
+        # Start using detectors after they've been trained. This is called to 
+        # tune the threshold during validation    
         futs = []
         start = 0
-    
         for i in range(self.num_workers):
             end = start + self.len_from_each[i]
             futs.append(
                 _remote_method_async(
-                    TEdgeEncoder.calc_loss,
+                    TEdgeEncoder.score_edges,
                     self.gcns[i],
-                    zs[start : end],
-                    partition, nratio
+                    self.H[i], partition, nratio
                 )
             )
             start = end 
 
-        tot_loss = torch.zeros(1)
-        for f in futs:
-            tot_loss += f.wait()
-
-        return [tot_loss.true_divide(self.num_workers), 
-                self.anom_loss.true_divide(self.num_workers)]
-        
-
-    def score_edges(self, zs, partition, nratio=1):
-        '''
-        Gets edge scores from dist modules, and negative edges. 
-        Sends workers embeddings such that zs[n] is used to reconstruct graph at 
-        snapshot n
-
-        zs : torch.Tensor 
-            A T x d x N tensor of node embeddings generated by each graph snapshot
-            Need to offset according to how far in the future embeddings are supposed
-            to represent.
-        partition : int
-            enum representing train, validation, test sent to workers
-        nratio : float
-            The workers sample nratio * |E| negative edges for calculating loss
-        '''
-    
-        futs = [
-            _remote_method_async(
-                TEdgeEncoder.score_edges,
-                self.gcns[i],
-                self.H[i], 
-                partition, nratio
-            )
-        for i in range(self.num_workers) ]
-
         pos, neg = zip(*[f.wait() for f in futs])
         return torch.cat(pos, dim=0), torch.cat(neg, dim=0)
+
+    def decoder_parameter_rrefs(self):
+        '''
+        Distributed optimizer needs RRefs to params rather than the literal
+        locations of them that you'd get with self.parameters(). This returns
+        a parameter list of all remote workers and an RRef of the RNN held by
+        the recurrent layer
+        '''
+        params = []
+        for rref in self.gcns: 
+            params.extend(
+                _remote_method(
+                    _decoder_rrefs, rref
+                )
+            )
+
+        return params
+
+   
     

@@ -27,3 +27,13 @@ def _param_rrefs(module):
         )
     
     return rrefs
+
+# Slight tweak to _params_rrefs call for decoders
+def _decoder_rrefs(module):
+    rrefs = []
+    for param in module.decoder_parameters():
+        rrefs.append(
+            rpc.RRef(param)
+        )
+
+    return rrefs

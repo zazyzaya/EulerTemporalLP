@@ -12,7 +12,7 @@ import torch.distributed.rpc as rpc
 import torch.distributed.autograd as dist_autograd
 from torch.distributed.optim import DistributedOptimizer
 import torch.multiprocessing as mp
-from torch.optim import Adam
+from torch.optim import Adam, Adadelta
 
 from loaders.tdata import TData
 from models.static import StaticEncoder, StaticRecurrent 
@@ -163,7 +163,7 @@ def init_procs(rank, world_size, rnn_constructor, rnn_args, worker_constructor, 
                 else TEdgeRecurrentDynamic(rnn, rrefs)
 
             states = pickle.load(open('model_save.pkl', 'rb'))
-            model.load_states(states['gcn'], states['rnn'])
+            model.load_states(*states['states'])
             h0 = states['h0']
             tpe = 0
             tr_time = 0
@@ -191,10 +191,11 @@ def init_procs(rank, world_size, rnn_constructor, rnn_args, worker_constructor, 
                 'delta': times['delta']
             }
             st = test(model, h0, test_times, rrefs, manual=manual, unsqueeze=tr_args['decompress'])
-            st['TPE'] = tpe
-            st['tr_time'] = tr_time
+            for s in st:
+                s['TPE'] = tpe
+                s['tr_time'] = tr_time
 
-            stats.append(st)
+            stats += st
 
     # Slaves
     else:
@@ -283,10 +284,16 @@ def train(rrefs, kwargs, rnn_constructor, rnn_args, impl):
                 print("Early stopping!")
                 break 
 
-    model.load_states(best[0][0], best[0][1])
+    model.load_states(*best[0])
+
+    if 'TEDGE' in impl:
+        print("Training anom detector on final static embeds")
+        model = train_detector(model, zs, kwargs)
+
+    # Get the best possible h0 to eval with
     zs, h0 = model(TData.TEST, include_h=True)
 
-    states = {'gcn': best[0][0], 'rnn': best[0][1], 'h0': h0}
+    states = {'states': best[0], 'h0': h0}
     f = open('model_save.pkl', 'wb+')
     pickle.dump(states, f, protocol=pickle.HIGHEST_PROTOCOL)
 
@@ -297,6 +304,64 @@ def train(rrefs, kwargs, rnn_constructor, rnn_args, impl):
     return model, h0, tpe
 
 
+def train_detector(model, zs, kwargs):
+    # Both models are held in the Encoder class, but the params are kept
+    # seperate 
+    opt = DistributedOptimizer(
+        Adam, model.decoder_parameter_rrefs(), lr=kwargs['lr']
+    )
+
+    times = []
+    best = (None, float('inf'))
+    no_progress = 0
+    for e in range(kwargs['epochs']):
+        # Get loss and send backward
+        model.train()
+        with dist_autograd.context() as context_id:
+            print("forward")
+            st = time.time()
+            loss = model.anom_forward(TData.TRAIN, zs)
+
+            print("backward")
+            dist_autograd.backward(context_id, loss)
+            
+            print("step")
+            opt.step(context_id)
+
+            elapsed = time.time()-st 
+            times.append(elapsed)
+            l = torch.stack(loss).sum()
+            print('[%d] Loss %0.4f  %0.2fs' % (e, l.item(), elapsed))
+        
+        # Get validation info to prevent overfitting
+        model.eval()
+        with torch.no_grad():
+            p,n = model.score_edges(zs, TData.VAL)
+            ap, auc = get_score(p,n)
+            loss = model.anom_forward(TData.VAL, zs, no_grad=True)
+            loss = torch.stack(loss).sum().item()
+
+            print("\tValidation: AP: %0.4f  AUC: %0.4f" % (ap, auc))
+            print("\tVal loss: %0.6f" % loss, end='')
+
+            tot = loss 
+            if tot < best[1]:
+                print('*\n')
+                best = (model.save_states(), tot)
+                no_progress = 0
+            else:
+                print('\n')
+                if e >= kwargs['min']:
+                    no_progress += 1 
+
+            if no_progress == kwargs['patience']:
+                print("Early stopping!")
+                break 
+
+    model.load_states(*best[0])
+    return model 
+
+
 '''
 Given a trained model, generate the optimal cutoff point using
 the validation data
@@ -304,10 +369,10 @@ the validation data
 def get_cutoff(model, h0, times, kwargs, lambda_param):
     # Weirdly, calling the parent class' method doesn't work
     # whatever. This is a hacky solution, but it works
-    Encoder = StaticEncoder if isinstance(model, StaticRecurrent) \
-        else DynamicEncoder if isinstance(model, DynamicRecurrent) \
-        else TEdgeEncoder if isinstance(model, TEdgeRecurrent) \
-        else TEdgeEncoderDynamic
+    Encoder = TEdgeEncoder if isinstance(model, TEdgeRecurrent) \
+        else TEdgeEncoderDynamic if isinstance(model, TEdgeRecurrentDynamic) \
+        else StaticEncoder if isinstance(model, StaticRecurrent) \
+        else DynamicEncoder
 
     # First load validation data onto one of the GCNs
     _remote_method(
@@ -346,18 +411,30 @@ def get_cutoff(model, h0, times, kwargs, lambda_param):
 
     # Finally, figure out the optimal cutoff score
     model.cutoff = get_optimal_cutoff(p,n,fw=lambda_param)
+
+    # Because we eval both decoders at the same time
+    # (But not in the dynamic TEdge impl)
+    if model.__class__ == TEdgeRecurrent:
+        p,n = _remote_method(
+            Encoder.score_edges, 
+            model.gcns[0],
+            zs, TData.ALL,
+            kwargs['val_nratio'],
+            zscores=True
+        )
+        model.z_cutoff = get_optimal_cutoff(p,n,fw=lambda_param)
+
     print()
     return h0, zs[-1]
-
 
 def test(model, h0, times, rrefs, manual=False, unsqueeze=False):
     # For whatever reason, it doesn't know what to do if you call
     # the parent object's methods. Kind of defeats the purpose of 
     # using OOP at all IMO, but whatever
-    Encoder = StaticEncoder if isinstance(model, StaticRecurrent) \
-        else DynamicEncoder if isinstance(model, DynamicRecurrent) \
+    Encoder = TEdgeEncoderDynamic if isinstance(model, TEdgeRecurrentDynamic) \
         else TEdgeEncoder if isinstance(model, TEdgeRecurrent) \
-        else TEdgeEncoderDynamic
+        else StaticEncoder if isinstance(model, StaticRecurrent) \
+        else DynamicEncoder
 
     # Load train data into workers
     ld_args = get_work_units(
@@ -396,42 +473,40 @@ def test(model, h0, times, rrefs, manual=False, unsqueeze=False):
         model.eval()
         s = time.time()
         zs = model.forward(TData.TEST, h0=h0, no_grad=True)
+        
+        # Generate anom scores if using decoder (kind of a sloppy way
+        # to check but whatever)
+        if 'TEdge' in model.__class__.__name__:
+            _ = model.anom_forward(TData.TEST, zs) 
+
         ctime = time.time()-s
 
     # Scores all edges and matches them with name/timestamp
     print("Scoring")
-    scores, labels, weights = model.score_all(zs, unsqueeze=unsqueeze)
+    scores, labels, weights = model.score_all(zs)
+    stats = [score_stats(
+        model.__class__.__name__, 
+        scores, labels, weights, model.cutoff, ctime
+    )]
 
+    # Can also generate Z embedding scores (Euler-simple) while
+    # scoring Euler-SM models to save some time
+    if Encoder == TEdgeEncoder:
+        print("Scoring")
+        scores, labels, weights = model.score_all(zs, zscores=True)
+        stats.append(
+            score_stats(
+                'StaticEncoder', 
+                scores, labels, weights, model.z_cutoff, ctime
+            )
+        )
+    
     # Then reset model to having all workers for future tests
     model.num_workers = len(rrefs)
+    return stats
+    
 
-    if manual:
-        labels = [
-            _remote_method_async(
-                Encoder.get_repr,
-                rrefs[i],
-                scores[i], 
-                delta=times['delta']
-            )
-            for i in range(len(rrefs))
-        ]
-        labels = sum([l.wait() for l in labels], [])
-        labels.sort(key=lambda x : x[0])
-
-        with open(SCORE_FILE, 'w+') as f:
-            cutoff_hit = False
-            for l in labels:
-                f.write(str(l[0].item()))
-                f.write('\t')
-                f.write(l[1])
-                f.write('\n')
-
-                if l[0] >= model.cutoff and not cutoff_hit:
-                    f.write('-'*100 + '\n')
-                    cutoff_hit = True
-
-        return {}
-
+def score_stats(title, scores, labels, weights, cutoff, ctime):
     # Cat scores from timesteps together bc separation 
     # is no longer necessary 
     scores = torch.cat(scores, dim=0)
@@ -440,7 +515,7 @@ def test(model, h0, times, rrefs, manual=False, unsqueeze=False):
 
     # Classify using cutoff from earlier
     classified = torch.zeros(labels.size())
-    classified[scores <= model.cutoff] = 1
+    classified[scores <= cutoff] = 1
 
     # Number of alerts: if alert, then classified 1
     # then when multiplied by weights, shows how many
@@ -483,13 +558,15 @@ def test(model, h0, times, rrefs, manual=False, unsqueeze=False):
     f1 = f1_score(labels, classified, sample_weight=weights)
     f1_uw = f1_score(labels, classified)
 
-    print("Learned Cutoff %0.4f" % model.cutoff)
+    print(title)
+    print("Learned Cutoff %0.4f" % cutoff)
     print("TPR: %0.2f, FPR: %0.2f" % (tpr, fpr))
     print("TP: %d  FP: %d" % (tp, fp))
     print("F1: %0.8f" % f1)
     print("AUC: %0.4f  AP: %0.4f\n" % (auc,ap))
 
     return {
+        'Model': title,
         'TPR':tpr.item(), 
         'FPR':fpr.item(), 
         'TP':tp.item(), 

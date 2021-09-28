@@ -16,7 +16,7 @@ from spinup import run_all
 
 DEFAULT_TR = {
     'lr': 0.01,
-    'epochs': 500,
+    'epochs': 1,#500,
     'min': 1,
     'patience': 5,
     'nratio': 10,
@@ -230,6 +230,8 @@ if __name__ == '__main__':
     f.write(str(argstr) + '\n\n')
 
     dfs = [pd.DataFrame(s) for s in list(zip(*stats))]
+
+    dupes = len(dfs) // len(args.te_times)
     for i in range(len(dfs)):
         df = dfs[i]
 
@@ -241,7 +243,7 @@ if __name__ == '__main__':
         full = df.to_csv(index=False, header=False)
         full = full.replace(',', ', ')
 
-        f.write('[%d]:\n' % i)        
+        f.write('[%d]:\n' % (i//dupes))        
         f.write(str(compressed) + '\n')
         f.write(full + '\n')
 

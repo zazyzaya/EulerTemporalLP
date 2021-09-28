@@ -91,6 +91,10 @@ class Euler_Encoder(DDP):
         '''
         return self.module.data.__getattribute__(field)
 
+
+    def get_data(self):
+        return self.module.data
+
     
     def run_arbitrary_fn(self, fn, *args, **kwargs):
         '''
@@ -259,6 +263,7 @@ class Euler_Recurrent(nn.Module):
             embed.size(0) for embed in zs
         ]
         zs = torch.cat(zs, dim=0)
+        self.z_dim = zs.size(-1)
 
         #zs, h0 = self.rnn(torch.cat(zs, dim=0), h0, include_h=True)
 

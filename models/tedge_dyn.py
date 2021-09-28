@@ -4,10 +4,11 @@ import torch
 from torch import nn 
 from torch.autograd import Variable
 from torch.distributed import rpc
+from torch.nn.parallel import DistributedDataParallel as DDP
 
 from .embedders import GCN 
-from .framework import Euler_Embed_Unit, Euler_Encoder, Euler_Recurrent
-from .tedge import TEdgeAnoms
+from .static import StaticRecurrent, StaticEncoder
+from .tedge import TEdgeAnoms, TEdgeDecoder, TEdgeRecurrent
 from .utils import _remote_method_async
 
 
@@ -16,8 +17,8 @@ class TEdgeAnomsDynamic(TEdgeAnoms):
     def inner_forward(self, x, ei):
         # Loss is a little more complicated now, so we calculate it sepearately
         return self.H(x,ei)
-        
-    def loss_fn(self, H, ei):
+    
+    def inner_loss(self, H, ei):
         '''
         Assumes H is aligned w ei s.t. H[0] represents embeddings from
         timestep 0 and ei[0] represents edges at timestep 1
@@ -28,89 +29,84 @@ class TEdgeAnomsDynamic(TEdgeAnoms):
             ei[1]
         )
 
-
-'''
-Attempting strat from this paper:
-Unified Graph Embedding-based Anomalous Edge Detection
-https://ieeexplore.ieee.org/document/9206720
-'''
-class TEdgeConvDynamic(GCN):
-    def __init__(self, data_load, data_kws, h_dim, z_dim, n_samples=5):
-        super().__init__(data_load, data_kws, h_dim, z_dim)
-        
-        # This is a hacky solution. TODO figure out how to tell edge conv number of 
-        # output dimensions from GRU
-        self.anom_detector = TEdgeAnomsDynamic(z_dim//2, self.data.num_nodes, n_samples)
-
-    def score(self, H, ei):
-        return self.anom_detector.score(H, ei)
-
-    def anom_loss(self, H, ei):
-        return self.anom_detector.loss_fn(H, ei)
+    def loss_fn(self, H, ei, no_grad):
+        if no_grad:
+            with torch.no_grad():
+                return self.inner_loss(H, ei)
+        return self.inner_loss(H, ei)
 
 
 def dyn_tedge_rref(loader, kwargs, h_dim, z_dim, head=False):
     return TEdgeEncoderDynamic(
-        TEdgeConvDynamic(loader, kwargs, h_dim, z_dim), head
+        GCN(loader, kwargs, h_dim, z_dim), 
+        head, TEdgeAnomsDynamic, z_dim 
     )
 
-class TEdgeEncoderDynamic(Euler_Encoder):
-    def __init__(self, module: Euler_Embed_Unit, head: bool, **kwargs):
-        '''
-        Constructor for DynamicEncoder
+class TEdgeDynDecoder(TEdgeDecoder):
+    '''
+    DDP wrapper for decoder class w added methods for dynamic version
+    '''
+    def loss_fn(self, H, ei, no_grad):
+        return self.module.loss_fn(H, ei, no_grad)
 
-        parameters 
-        ----------
-        module : Euler_Embed_Unit
-            The model to encode temporal data. module.forward must accept an enum 
-            reprsenting train/val/test and nothing else. See embedders.py for acceptable
-            modules 
-        head : boolean 
-            If this worker holds timestep 0, which will never be encoded, as dynamic modules
-            aim to predict future snapshots, it needs to know not to run loss on snapshot[0]
-        kwargs : dict
-            any args for the DDP constructor
-        '''
-
+class TEdgeEncoderDynamic(StaticEncoder):
+    def __init__(self, module, head, decoder_constructor, z_dim, **kwargs):
         super().__init__(module, **kwargs)
+        
         self.is_head = 1 if head else 0
         if self.is_head:
             print("%s is head" % rpc.get_worker_info().name)
 
+        # Cleaner naming convention
+        self.encoder = self.module 
+        
+        # Need to wrap in a DDP to coordinate params again. Luckilly this time it's pretty
+        # simple to do. We just have to add one additional method to the baseline DDP class
+        self.decoder = TEdgeDynDecoder(
+            decoder_constructor(
+                z_dim//2, 
+                self.module.data.num_nodes, 
+                5
+            )
+        )
+        
+    def parameters(self, recurse: bool = True):
+        '''
+        Exclude decoder params as those are trained seperately
+        '''
+        return self.encoder.parameters(recurse=recurse)
 
-    def detect_anoms(self, zs, partition, no_grad):
+    def decoder_parameters(self, recurse: bool=True):
+        '''
+        Exclude encoder params
+        ''' 
+        return self.decoder.parameters(recurse=recurse)
+
+
+
+    def anom_forward(self, zs, partition, no_grad):
         '''
         Generates H embeds for anom detection
         '''
         H = []
         
-        for i in range(self.module.data.T):
-            ei = self.module.data.ei_masked(partition, i)
-            h = self.module.anom_detector(zs[i], ei, no_grad=no_grad)
-            H.append(h)
+        for i in range(self.encoder.data.T):
+            ei = self.encoder.data.ei_masked(partition, i)
+
+            if ei.size(1):
+                h = self.decoder(zs[i], ei, no_grad=no_grad)
+                H.append(h)
+            
+            # This SHOULD only happen during val so this hopefully won't ruin 
+            # anything.. In any case, there are implied self-loops so this is 
+            # H entry is sound
+            else:
+                H.append(zs[i])
 
         return torch.stack(H)
 
-    def score_edges(self, H, partition, nratio):
-        n = self.module.data.get_negative_edges(partition, nratio)
 
-        p_scores = []
-        n_scores = []
-
-        for i in range(self.is_head, self.module.data.T):
-            p = self.module.data.ei_masked(partition, i)
-            if p.size(1) == 0:
-                continue
-
-            p_scores.append(self.module.score(H[i], p))
-            n_scores.append(self.module.score(H[i], n[i]))
-
-        p_scores = torch.cat(p_scores, dim=0)
-        n_scores = torch.cat(n_scores, dim=0)
-
-        return p_scores, n_scores
-
-    def decode_all(self, H, unsqueeze=False):
+    def decode_all(self, H, unsqueeze=True):
         '''
         Given node embeddings, return edge likelihoods for 
         all subgraphs held by this model
@@ -126,77 +122,79 @@ class TEdgeEncoderDynamic(Euler_Encoder):
             snapshot held by this model's TGraph at timestep n
         '''
         preds, ys, cnts = [], [], []
-        for i in range(self.is_head, self.module.data.T):
+        for i in range(self.is_head, self.encoder.data.T):
             preds.append(
-                self.module.score(
+                self.decoder.score(
                     H[i],
-                    self.module.data.eis[i]
+                    self.encoder.data.eis[i]
                 )
             )
 
-            ys.append(self.module.data.ys[i])
-            cnts.append(self.module.data.cnt[i])
+            ys.append(self.encoder.data.ys[i])
+            cnts.append(self.encoder.data.cnt[i])
 
         return preds, ys, cnts
 
-    def calc_loss(self, z, H, partition, nratio):
-        '''
-        Want the Z embeddings to do static prediction (ie Z[0] reconstructs ei[0])
-        Want the anom detector to predict next timestep (ie H[0] predicts ei[1])
+    def score_edges(self, H, partition, nratio):
+        n = self.encoder.data.get_negative_edges(partition, nratio)
 
-        Thus, we assume the H embeds are offset already, and if head, H[0] is a dummy value
-        '''
-        recon_loss = torch.zeros(1)
-        anom_loss = torch.zeros(1)
-        ns = self.module.data.get_negative_edges(partition, nratio)
+        p_scores = []
+        n_scores = []
 
-        for i in range(len(z)):
-            ps = self.module.data.ei_masked(partition, i)
-            
-            # Edge case. Prevents nan errors when not enough edges
-            # only happens with very small timewindows 
-            if ps.size(1) == 0:
+        for i in range(self.is_head, self.module.data.T):
+            p = self.encoder.data.ei_masked(partition, i)
+            if p.size(1) == 0:
                 continue
 
-            recon_loss += self.bce(
-                self.decode(ps, z[i]),
-                self.decode(ns[i], z[i])
-            )
+            p_scores.append(self.decoder.score(H[i], p))
+            n_scores.append(self.decoder.score(H[i], n[i]))
+
+        p_scores = torch.cat(p_scores, dim=0)
+        n_scores = torch.cat(n_scores, dim=0)
+
+        return p_scores, n_scores
+
+    def anom_loss(self, H, partition, no_grad):
+        '''
+        Want the anom detector to predict next timestep (ie H[0] predicts ei[1])
+        Thus, we assume the H embeds are offset already, and if head, H[0] is a dummy value
+        '''
+        loss = torch.zeros(1)
+        for i in range(len(H)):
+            ps = self.encoder.data.ei_masked(partition, i)
             
-            # Cant predict ei[0] as anom detector only predicts future
-            # time steps
+            if not ps.size(1):
+                continue 
+
             if self.is_head:
                 if i > 0:
-                    anom_loss += self.module.anom_loss(H[i], ps)
+                    loss += self.decoder.loss_fn(H[i], ps, no_grad)
             else:
-                anom_loss += self.module.anom_loss(H[i], ps)
+                loss += self.decoder.loss_fn(H[i], ps, no_grad)
 
-        tot_loss = recon_loss.true_divide(len(z)) 
+        if len(H)-self.is_head:
+            return loss.true_divide(len(H)-self.is_head)
 
-        if len(z)-self.is_head:
-            tot_loss += anom_loss.true_divide(len(z)-self.is_head)
-
-        return tot_loss
+        return torch.zeros(1)
 
 
-class TEdgeRecurrentDynamic(Euler_Recurrent):
-    def forward(self, mask_enum, include_h=False, h0=None, no_grad=False):
-        if include_h:
-            z, h = super().forward(mask_enum, include_h=include_h, h0=h0, no_grad=no_grad)
-        else:
-            z = super().forward(mask_enum, include_h=include_h, h0=h0, no_grad=no_grad)
-
+class TEdgeRecurrentDynamic(TEdgeRecurrent):
+    def anom_forward(self, mask_enum, zs, no_grad=False):
         # Train the anomaly detector on the output of the embedder at the same time 
         # note the Variable though; loss here won't backprop into the GNN/RNN
+        self.decoding = True
+
         futs = []
         start = 0
+
+        zs = Variable(zs)
         for i in range(self.num_workers):
             end = start + self.len_from_each[i]
             futs.append(
                 _remote_method_async(
-                    TEdgeEncoderDynamic.detect_anoms,
+                    TEdgeEncoderDynamic.anom_forward,
                     self.gcns[i],
-                    Variable(z[start : end]), 
+                    zs[start : end], 
                     mask_enum,
                     no_grad
                 )
@@ -220,12 +218,22 @@ class TEdgeRecurrentDynamic(Euler_Recurrent):
             self.H.append(H[start:end])
             start = end 
 
-        if include_h:
-            return z, h 
-        else: 
-            return z
+        # Then calculate loss     
+        futs = [
+            _remote_method_async(
+                TEdgeEncoderDynamic.anom_loss,
+                self.gcns[i],
+                self.H[i], 
+                mask_enum,
+                no_grad
+            )
+            for i in range(self.num_workers)
+        ]
 
-    def score_all(self, *args, unsqueeze=False):
+        return [f.wait() for f in futs]
+
+
+    def score_all(self, zs, unsqueeze=False):
         '''
         Has the distributed models score and label all of their edges
         Sends workers embeddings such that H[n] is used to reconstruct graph at 
@@ -243,7 +251,8 @@ class TEdgeRecurrentDynamic(Euler_Recurrent):
                 self.H[i],
                 unsqueeze=unsqueeze
             )
-        for i in range(self.num_workers) ]
+            for i in range(self.num_workers) 
+        ]
 
         obj = [f.wait() for f in futs]
         scores, ys, cnts = zip(*obj)
@@ -254,40 +263,6 @@ class TEdgeRecurrentDynamic(Euler_Recurrent):
         cnts = sum(cnts, [])
 
         return scores, ys, cnts
-
-
-    def loss_fn(self, zs, partition, nratio=1):
-        '''
-        Runs NLL on each worker machine given the generated embeds
-        Sends workers embeddings such that zs[n] is used to reconstruct graph at 
-        snapshot n
-
-        zs : torch.Tensor 
-            A T x d x N tensor of node embeddings generated by each graph snapshot
-            Need to offset according to how far in the future embeddings are supposed
-            to represent.
-        partition : int
-            enum representing train, validation, test sent to workers
-        nratio : float
-            The workers sample nratio * |E| negative edges for calculating loss
-        '''
-        futs = []
-        start = 0
-    
-        for i in range(self.num_workers):
-            end = start + self.len_from_each[i]
-            futs.append(
-                _remote_method_async(
-                    TEdgeEncoderDynamic.calc_loss,
-                    self.gcns[i],
-                    zs[start : end],
-                    self.H[i],
-                    partition, nratio
-                )
-            )
-            start = end 
-
-        return [f.wait() for f in futs]
         
 
     def score_edges(self, zs, partition, nratio=1):
@@ -305,7 +280,11 @@ class TEdgeRecurrentDynamic(Euler_Recurrent):
         nratio : float
             The workers sample nratio * |E| negative edges for calculating loss
         '''
+        if not self.decoding:
+            print("Returning Static score")
+            return super().score_edges(zs, partition, nratio)
     
+        print("Returning dynamic TEdge score")
         futs = [
             _remote_method_async(
                 TEdgeEncoderDynamic.score_edges,
