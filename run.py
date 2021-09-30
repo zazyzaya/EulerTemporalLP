@@ -16,7 +16,8 @@ from spinup import run_all
 
 DEFAULT_TR = {
     'lr': 0.01,
-    'epochs': 1,#500,
+    'anom_lr': 0.1,
+    'epochs': 1,#200,
     'min': 1,
     'patience': 5,
     'nratio': 10,
@@ -151,7 +152,7 @@ def get_args():
         args.tr_start = 0 #optc.TIMES['val_start']
         args.tr_end = optc.TIMES['val_end']
         args.val_times = None #(optc.TIMES['val_start'], optc.TIMES['val_end'])
-        args.te_times = [optc.DAY1, optc.DAY2, optc.DAY3, optc.ALL]
+        args.te_times = [optc.ALL]#optc.DAY1, optc.DAY2, optc.DAY3, optc.ALL]
         args.delta = int(args.delta * 60)
         args.manual = False 
 

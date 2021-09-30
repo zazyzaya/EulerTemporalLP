@@ -281,10 +281,8 @@ class TEdgeRecurrentDynamic(TEdgeRecurrent):
             The workers sample nratio * |E| negative edges for calculating loss
         '''
         if not self.decoding:
-            print("Returning Static score")
             return super().score_edges(zs, partition, nratio)
     
-        print("Returning dynamic TEdge score")
         futs = [
             _remote_method_async(
                 TEdgeEncoderDynamic.score_edges,

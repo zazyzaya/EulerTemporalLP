@@ -5,7 +5,7 @@ from torch import nn
 from torch.autograd import Variable
 from torch.distributed import rpc
 from torch.nn.parallel import DistributedDataParallel as DDP
-from torch_geometric.nn import MessagePassing
+from torch_geometric.nn import GCNConv
 from zayas_graph_modules.samplers import SampleMean
 
 from .embedders import GCN 
@@ -57,6 +57,7 @@ class TEdgeAnoms(nn.Module):
             src_score = distros[src, dst]
             dst_score = distros[dst, src]
 
+            del distros
             return (src_score+dst_score)*0.5
 
 def tedge_rref(loader, kwargs, h_dim, z_dim, **kws):
@@ -147,7 +148,7 @@ class TEdgeEncoder(StaticEncoder):
 
         return preds, ys, cnts
 
-    def score_edges(self, z, partition, nratio, zscores=False):
+    def score_edges(self, H, partition, nratio, zscores=False):
         '''
         Given a set of Z embeddings, returns likelihood scores for all known
         edges, and randomly sampled negative edges
@@ -175,8 +176,8 @@ class TEdgeEncoder(StaticEncoder):
             if p.size(1) == 0:
                 continue
 
-            p_scores.append(self.decoder.score(z[i], p))
-            n_scores.append(self.decoder.score(z[i], n[i]))
+            p_scores.append(self.decoder.score(H[i], p))
+            n_scores.append(self.decoder.score(H[i], n[i]))
 
         p_scores = torch.cat(p_scores, dim=0)
         n_scores = torch.cat(n_scores, dim=0)
@@ -214,8 +215,8 @@ class TEdgeRecurrent(StaticRecurrent):
 
         # Workers just run loss and return it
         loss, hs = zip(*[f.wait() for f in futs])
+        self.H = hs 
         
-        self.H = hs
         return loss 
 
     def score_all(self, zs, zscores=False):
@@ -233,15 +234,19 @@ class TEdgeRecurrent(StaticRecurrent):
             # Uses StaticEncoder.score_all method (i.e. just uses inner product)
             return super().score_all(zs)
 
-        futs = [
-            _remote_method_async(
-                TEdgeEncoder.decode_all,
-                self.gcns[i],
-                self.H[i]
+        futs = []
+        start = 0
+        for i in range(self.num_workers):
+            end = start + self.len_from_each[i]
+            futs.append(
+                _remote_method_async(
+                    TEdgeEncoder.decode_all,
+                    self.gcns[i],
+                    self.H[i] #zs[start : end]
+                )
             )
-            for i in range(self.num_workers)
-        ]
-
+            start = end 
+            
         obj = [f.wait() for f in futs]
         scores, ys, cnts = zip(*obj)
         

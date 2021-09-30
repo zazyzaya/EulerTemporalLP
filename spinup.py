@@ -308,7 +308,7 @@ def train_detector(model, zs, kwargs):
     # Both models are held in the Encoder class, but the params are kept
     # seperate 
     opt = DistributedOptimizer(
-        Adam, model.decoder_parameter_rrefs(), lr=kwargs['lr']
+        Adam, model.decoder_parameter_rrefs(), lr=kwargs['anom_lr']
     )
 
     times = []
@@ -330,7 +330,7 @@ def train_detector(model, zs, kwargs):
 
             elapsed = time.time()-st 
             times.append(elapsed)
-            l = torch.stack(loss).sum()
+            l = torch.stack(loss).mean()
             print('[%d] Loss %0.4f  %0.2fs' % (e, l.item(), elapsed))
         
         # Get validation info to prevent overfitting
@@ -339,7 +339,7 @@ def train_detector(model, zs, kwargs):
             p,n = model.score_edges(zs, TData.VAL)
             ap, auc = get_score(p,n)
             loss = model.anom_forward(TData.VAL, zs, no_grad=True)
-            loss = torch.stack(loss).sum().item()
+            loss = torch.stack(loss).mean().item()
 
             print("\tValidation: AP: %0.4f  AUC: %0.4f" % (ap, auc))
             print("\tVal loss: %0.6f" % loss, end='')
