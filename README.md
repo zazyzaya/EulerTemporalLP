@@ -1,5 +1,5 @@
 # Euler: Detecting Network Lateral Movement via Scalable Temporal Graph Link Prediction
-The code powering the Euler Temporal Link Prediction framework (paper under review)
+The code powering the Euler Temporal Link Prediction framework ([Published in NDSS'22](https://www.ndss-symposium.org/wp-content/uploads/2022-107A-paper.pdf))
 
 ## Abstract
 Lateral movement is a key stage of system compromise used by advanced persistent threats. Detecting it is no simple task. When network host logs are abstracted into discrete temporal graphs, the problem can be reframed as anomalous edge detection in an evolving network. Research in modern deep graph learning techniques has produced many creative and complicated models for this task. However, as is the case in many machine learning fields, generality of models is of paramount importance so as to achieve good accuracy and scalability in training and inference.  
